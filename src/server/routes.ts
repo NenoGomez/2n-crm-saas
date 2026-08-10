@@ -1,4 +1,6 @@
 import express, { Router } from "express";
+import { spawnSync, spawn } from "child_process";
+import path from "path";
 import { q } from "./db";
 import * as AI from "./ai";
 
@@ -24,8 +26,38 @@ const wrap =
  * TODO(nino): wire real WhatsApp send through Chatwoot / Evolution API.
  * Set CRM_NOTIFY_WEBHOOK to an endpoint accepting {channel,target,subject,body}.
  */
+const scriptPath = (name: string) => {
+  const fs = require("fs");
+  const cands = [path.join(__dirname, name), path.join(__dirname, "..", name),
+    path.join(__dirname, "..", "..", name), path.join(process.cwd(), name),
+    "/root/crm-saas/" + name];
+  return cands.find((p) => { try { return fs.existsSync(p); } catch { return false; } }) || cands[cands.length - 1];
+};
+
 async function notify(channel: string, target: string, subject: string, body: string) {
   let status = "logged";
+
+  // Real WhatsApp send through Chatwoot (rails runner) via python helper.
+  if (channel === "whatsapp" && target) {
+    try {
+      const script = scriptPath("notify_production.py");
+      const out: string = await new Promise((resolve) => {
+        const cp = spawn("/usr/bin/python3", [script, "--client", String(target),
+          "--message", `${subject}\n${body}`], { stdio: ["ignore", "pipe", "pipe"] });
+        let b = "";
+        const timer = setTimeout(() => { try { cp.kill("SIGKILL"); } catch {} }, 120000);
+        cp.stdout.on("data", (d) => (b += d));
+        cp.stderr.on("data", (d) => (b += d));
+        cp.on("close", () => { clearTimeout(timer); resolve(b); });
+      });
+      status = out.includes("ENVIADO") ? "sent"
+        : out.includes("NAO_ENCONTRADO") ? "not_found"
+        : `failed:${(out.trim().split("\n").pop() || "unknown").slice(0, 120)}`;
+    } catch (e) {
+      status = `failed:${(e as Error).message}`;
+    }
+  }
+
   const hook = process.env.CRM_NOTIFY_WEBHOOK;
   if (hook) {
     try {
@@ -48,6 +80,25 @@ async function notify(channel: string, target: string, subject: string, body: st
     [channel, target, subject, body, status]);
   return status;
 }
+
+/* ------------------------- chatwoot sync ------------------------- */
+// NOTE: must NOT use spawnSync here — the script calls back into this same
+// Express server (POST /api/clients) and spawnSync would block the event loop.
+r.post("/sync/chatwoot", wrap(async (_req, res) => {
+  const script = scriptPath("sync_clients_from_chatwoot.py");
+  const out: string = await new Promise((resolve) => {
+    const cp = spawn("/usr/bin/python3", [script], { stdio: ["ignore", "pipe", "pipe"] });
+    let buf = "", err = "";
+    const timer = setTimeout(() => { try { cp.kill("SIGKILL"); } catch {} }, 180000);
+    cp.stdout.on("data", (d) => (buf += d));
+    cp.stderr.on("data", (d) => (err += d));
+    cp.on("close", () => { clearTimeout(timer); resolve(buf.trim() || err.trim()); });
+  });
+  let parsed: any = null;
+  try { parsed = JSON.parse(out.split("\n").pop() || "{}"); } catch { /* ignore */ }
+  if (!parsed) return res.status(500).json({ success: false, error: out.slice(0, 500) });
+  res.json(parsed);
+}));
 
 /* ----------------------------- health ----------------------------- */
 r.get("/health", wrap(async (_req, res) => {
