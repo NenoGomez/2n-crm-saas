@@ -2,6 +2,9 @@ import { Router } from "express";
 import { spawn } from "child_process";
 import { q, genId } from "../db";
 import * as AI from "../ai";
+import { generate as aiGenerate, loadProviders as aiLoadProviders } from "../ai-manager";
+
+aiLoadProviders();
 
 const r = Router();
 
@@ -87,7 +90,7 @@ Extraia um objeto JSON com estes campos exatos:
   "ficheiros": boolean, "observacoes": string, "pedido": string, "estado": string }
 Mensagem: """${text}"""
 Responda APENAS o JSON, sem comentários.`;
-  const out = await AI.generate(prompt, true);
+  const out = await aiGenerate({ text: prompt, json: true });
   if (out) {
     try {
       const m = out.match(/\{[\s\S]*\}/);

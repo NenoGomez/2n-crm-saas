@@ -1,0 +1,12 @@
+{
+  "providers": [
+    { "id": "gemini-mm-01", "provider": "google", "model": "gemini-3.6-flash", "apiKeyEnv": "GEMINI_API_KEY",
+      "capabilities": ["text","image","pdf","audio","video"], "priority": 100, "weight": 10, "enabled": true, "pool": "MULTIMODAL" },
+    { "id": "gemini-mm-02", "provider": "google", "model": "gemini-3.1-pro-preview", "apiKeyEnv": "GEMINI_API_KEY",
+      "capabilities": ["text","image","pdf","audio","video"], "priority": 100, "weight": 10, "enabled": true, "pool": "MULTIMODAL" },
+    { "id": "openrouter-mm", "provider": "openrouter", "model": "openai/gpt-4o-mini", "apiKeyEnv": "OPENROUTER_API_KEY",
+      "capabilities": ["text","image"], "priority": 80, "weight": 5, "enabled": true, "pool": "MULTIMODAL" },
+    { "id": "openrouter-txt", "provider": "openrouter", "model": "openai/gpt-4o-mini", "apiKeyEnv": "OPENROUTER_API_KEY",
+      "capabilities": ["text"], "priority": 70, "weight": 5, "enabled": true, "pool": "TEXT" }
+  ]
+}

@@ -5,10 +5,12 @@ import { q } from "./db";
 import * as AI from "./ai";
 import ordersRoutes from "./routes/orders";
 import whatsappRoutes from "./routes/whatsapp";
+import paymentsRoutes from "./routes/payments";
 
 const r = Router();
 r.use("/orders", ordersRoutes);
 r.use("/whatsapp", whatsappRoutes);
+r.use("/payments", paymentsRoutes);
 
 /* ----------------------------- helpers ----------------------------- */
 const merge = (row: any, extra: any = {}) => ({ ...(row?.doc || {}), ...extra });
@@ -390,6 +392,28 @@ r.get("/notifications", wrap(async (_req, res) => {
 }));
 
 /* --------------------------- bootstrap ---------------------------- */
+async function loadOrdersNew() {
+  const { rows: ors } = await q(`SELECT * FROM orders ORDER BY created_at DESC`);
+  const { rows: pros } = await q(`SELECT * FROM production_orders ORDER BY created_at ASC`);
+  const { rows: files } = await q(`SELECT * FROM production_files ORDER BY created_at ASC`);
+  const { rows: custs } = await q(`SELECT customer_id, name FROM customers`);
+  const cname: any = {}; custs.forEach((c: any) => (cname[c.customer_id] = c.name));
+  return ors.map((o: any) => {
+    const prod = pros.find((p: any) => p.order_id === o.order_id) || {};
+    const ofiles = files.filter((f: any) => f.order_id === o.order_id).map((f: any) => ({
+      id: f.file_id, name: f.name, size: f.size, type: f.mime_type, url: f.storage_url || undefined,
+      uploadedAt: f.uploaded_at, status: f.status,
+    }));
+    return {
+      ...(o.doc || {}),
+      id: o.order_id, customer_id: o.customer_id, customerName: cname[o.customer_id] || o.doc?.cliente || "Cliente",
+      productDescription: prod.product_description || o.doc?.produto || "", stage: prod.stage || o.status || "PEDIDO",
+      dueDate: prod.due_date || "", qualityStatus: prod.quality_status || "PENDENTE", qualityNote: prod.quality_note || undefined,
+      files: ofiles,
+    };
+  });
+}
+
 r.get("/bootstrap", wrap(async (_req, res) => {
   const [clients, deals, quotes, tasks, activities, alerts, automations, settings] = await Promise.all([
     q("SELECT * FROM clients ORDER BY created_at DESC"),
