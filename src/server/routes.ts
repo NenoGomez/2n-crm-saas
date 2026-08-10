@@ -3,8 +3,12 @@ import { spawnSync, spawn } from "child_process";
 import path from "path";
 import { q } from "./db";
 import * as AI from "./ai";
+import ordersRoutes from "./routes/orders";
+import whatsappRoutes from "./routes/whatsapp";
 
 const r = Router();
+r.use("/orders", ordersRoutes);
+r.use("/whatsapp", whatsappRoutes);
 
 /* ----------------------------- helpers ----------------------------- */
 const merge = (row: any, extra: any = {}) => ({ ...(row?.doc || {}), ...extra });
