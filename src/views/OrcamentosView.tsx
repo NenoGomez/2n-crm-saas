@@ -36,10 +36,12 @@ export const OrcamentosView: React.FC<OrcamentosViewProps> = ({
   const totalDraft = quotes.filter((q) => q.status === "Rascunho").length;
 
   const filteredQuotes = quotes.filter((q) => {
+    const s = (search || "").toLowerCase();
     const matchesSearch =
-      q.code.toLowerCase().includes(search.toLowerCase()) ||
-      q.company.toLowerCase().includes(search.toLowerCase()) ||
-      q.clientName.toLowerCase().includes(search.toLowerCase());
+      (q.code || q.number || "").toLowerCase().includes(s) ||
+      (q.company || "").toLowerCase().includes(s) ||
+      (q.clientName || "").toLowerCase().includes(s) ||
+      (q.title || "").toLowerCase().includes(s);
 
     if (statusFilter === "Todos") return matchesSearch;
     return matchesSearch && q.status === statusFilter;

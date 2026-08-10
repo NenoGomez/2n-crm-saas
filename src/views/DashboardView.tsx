@@ -25,6 +25,8 @@ interface DashboardViewProps {
   tasks: TaskItem[];
   setTasks: React.Dispatch<React.SetStateAction<TaskItem[]>>;
   deals?: DealCard[];
+  quotes?: any[];
+  orders?: any[];
 }
 
 export const DashboardView: React.FC<DashboardViewProps> = ({
@@ -36,7 +38,17 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   tasks,
   setTasks,
   deals = [],
+  quotes = [],
+  orders = [],
 }) => {
+  // Métricas reais derivadas do estado (não mock)
+  const vendasMes = deals.reduce((s: number, d: any) => s + Number(d.estimatedValue || 0), 0);
+  const orcamentosCount = quotes.length;
+  const emProducao = orders.length;
+  const pendentes = quotes.filter((q: any) => q.status === "Pendente" || q.status === "Enviado" || q.status === "Rascunho")
+    .reduce((s: number, q: any) => s + Number(q.totalGeral || 0), 0);
+  const leadsHermes = quotes.length + orders.length;
+
   const [revenueTimeframe, setRevenueTimeframe] = useState<"hoje" | "7d" | "30d" | "90d">("7d");
   const [newTaskTitle, setNewTaskTitle] = useState("");
   const [monthlyTarget, setMonthlyTarget] = useState<number>(15000000);
@@ -173,9 +185,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           <span className="text-[11px] font-semibold text-[#45464d] uppercase tracking-wider block">
             Vendas Hoje
           </span>
-          <div className="text-lg md:text-xl font-bold text-[#191c1e] mt-1">840.500 Kz</div>
+          <div className="text-lg md:text-xl font-bold text-[#191c1e] mt-1">{vendasMes > 0 ? vendasMes.toLocaleString("pt-BR") + " Kz" : "0 Kz"}</div>
           <span className="text-[10px] text-emerald-600 font-bold mt-1 inline-flex items-center gap-0.5">
-            <span className="material-symbols-outlined text-[12px]">trending_up</span> +14.2%
+            <span className="material-symbols-outlined text-[12px]">trending_up</span> Pipeline ativo
           </span>
         </div>
 
@@ -184,9 +196,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           <span className="text-[11px] font-semibold text-[#45464d] uppercase tracking-wider block">
             Vendas Este Mês
           </span>
-          <div className="text-lg md:text-xl font-bold text-[#191c1e] mt-1">12.4M Kz</div>
+          <div className="text-lg md:text-xl font-bold text-[#191c1e] mt-1">{vendasMes > 0 ? vendasMes.toLocaleString("pt-BR") + " Kz" : "0 Kz"}</div>
           <span className="text-[10px] text-emerald-600 font-bold mt-1 inline-flex items-center gap-0.5">
-            <span className="material-symbols-outlined text-[12px]">trending_up</span> +8.5%
+            <span className="material-symbols-outlined text-[12px]">trending_up</span> Pipeline total
           </span>
         </div>
 
@@ -198,9 +210,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           <span className="text-[11px] font-semibold text-[#45464d] uppercase tracking-wider block">
             Leads Hermes
           </span>
-          <div className="text-lg md:text-xl font-bold text-[#191c1e] mt-1">48</div>
+          <div className="text-lg md:text-xl font-bold text-[#191c1e] mt-1">{leadsHermes}</div>
           <span className="text-[10px] text-emerald-600 font-bold mt-1 inline-block">
-            12 qualificados hoje
+            {quotes.length} orçamentos + {orders.length} pedidos
           </span>
         </div>
 
@@ -209,9 +221,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           <span className="text-[11px] font-semibold text-[#45464d] uppercase tracking-wider block">
             Orçamentos
           </span>
-          <div className="text-lg md:text-xl font-bold text-[#191c1e] mt-1">15</div>
+          <div className="text-lg md:text-xl font-bold text-[#191c1e] mt-1">{orcamentosCount}</div>
           <span className="text-[10px] text-amber-600 font-bold mt-1 inline-block">
-            3 expiram em 24h
+            {quotes.filter((q:any)=>q.status==="Pendente"||q.status==="Enviado").length} pendentes
           </span>
         </div>
 
@@ -220,9 +232,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           <span className="text-[11px] font-semibold text-[#45464d] uppercase tracking-wider block">
             Em Produção
           </span>
-          <div className="text-lg md:text-xl font-bold text-[#191c1e] mt-1">112</div>
+          <div className="text-lg md:text-xl font-bold text-[#191c1e] mt-1">{emProducao}</div>
           <span className="text-[10px] text-blue-600 font-bold mt-1 inline-block">
-            4 impressões hoje
+            pedidos em produção
           </span>
         </div>
 
@@ -231,7 +243,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           <span className="text-[11px] font-semibold text-red-800 uppercase tracking-wider block">
             Valores Pendentes
           </span>
-          <div className="text-lg md:text-xl font-bold text-red-700 mt-1">2.1M Kz</div>
+          <div className="text-lg md:text-xl font-bold text-red-700 mt-1">{pendentes > 0 ? pendentes.toLocaleString("pt-BR") + " Kz" : "0 Kz"}</div>
           <span className="text-[10px] text-red-600 font-bold mt-1 inline-block">
             Ação requerida
           </span>

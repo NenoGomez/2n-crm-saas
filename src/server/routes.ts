@@ -415,9 +415,10 @@ async function loadOrdersNew() {
 }
 
 r.get("/bootstrap", wrap(async (_req, res) => {
-  const [clients, deals, quotes, tasks, activities, alerts, automations, settings] = await Promise.all([
-    q("SELECT * FROM clients ORDER BY created_at DESC"),
-    q("SELECT * FROM deals ORDER BY created_at DESC"),
+  // NOVA ESTRUTURA: ler de customers/orders/quotes/conversations e mapear para os tipos das views
+  const [customers, ordersRows, quotes, tasks, activities, alerts, automations, settings] = await Promise.all([
+    q("SELECT customer_id, name, phone, email, nif, status, (SELECT string_agg(DISTINCT co.name, ', ') FROM customer_companies cc JOIN companies co ON co.company_id=cc.company_id WHERE cc.customer_id=customers.customer_id) AS company FROM customers ORDER BY created_at DESC"),
+    q("SELECT * FROM orders ORDER BY created_at DESC"),
     q("SELECT * FROM quotes ORDER BY created_at ASC"),
     q("SELECT * FROM tasks ORDER BY created_at ASC"),
     q("SELECT * FROM activities ORDER BY created_at DESC LIMIT 50"),
@@ -425,26 +426,69 @@ r.get("/bootstrap", wrap(async (_req, res) => {
     q("SELECT * FROM automations ORDER BY created_at ASC"),
     q("SELECT doc FROM company_settings WHERE id=1"),
   ]);
+  const { rows: pros } = await q("SELECT * FROM production_orders ORDER BY created_at ASC");
   const { rows: convs } = await q("SELECT * FROM conversations ORDER BY created_at ASC");
   const { rows: msgs } = await q("SELECT * FROM chat_messages ORDER BY seq ASC");
 
+  const clients = customers.rows.map((c: any) => ({
+    id: c.customer_id, name: c.name || "Sem nome", company: c.company || "", phone: c.phone || "",
+    email: c.email || "", nif: c.nif || "", status: c.status || "Ativo",
+    totalSpent: 0, ordersCount: 0, lastPurchase: "", isVip: false, segment: "", manager: "",
+  }));
+
+  const ordersById: any = {};
+  ordersRows.rows.forEach((o: any) => (ordersById[o.order_id] = o));
+  const deals = ordersRows.rows.map((o: any) => {
+    const prod = pros.find((p: any) => p.order_id === o.order_id) || {};
+    const cust = customers.rows.find((c: any) => c.customer_id === o.customer_id);
+    return {
+      id: o.order_id, title: prod.product_description || o.doc?.produto || "Pedido", company: cust?.name || o.customer_id || "",
+      service: prod.product_description || o.doc?.produto || "", stage: (prod.stage || o.status || "NOVO"),
+      estimatedValue: Number(o.doc?.total_geral || prod.total || 0), priority: "Média",
+      dueDate: prod.due_date || "", owner: "Hermes", lastActivity: "", clientId: o.customer_id,
+    };
+  });
+
+  const orders = ordersRows.rows.map((o: any) => {
+    const prod = pros.find((p: any) => p.order_id === o.order_id) || {};
+    const cust = customers.rows.find((c: any) => c.customer_id === o.customer_id);
+    return {
+      id: o.order_id, customerId: o.customer_id, clientName: cust?.name || "Cliente",
+      productDescription: prod.product_description || o.doc?.produto || "", stage: prod.stage || o.status || "PEDIDO",
+      dueDate: prod.due_date || "", qualityStatus: prod.quality_status || "PENDENTE", qualityNote: prod.quality_note || undefined,
+      files: [],
+    };
+  });
+
+  const convList = convs.map((c: any) => {
+    const cust = customers.rows.find((x: any) => x.customer_id === c.customer_id);
+    return {
+      id: c.conversation_id || c.id, clientId: c.customer_id, clientName: cust?.name || c.doc?.cliente || "Cliente",
+      company: c.company || "", channel: c.channel || "whatsapp", unreadCount: c.unread_count || 0,
+      lastMessage: c.last_message || "", lastMessageTime: c.last_message_time || "",
+      messages: msgs.filter((m: any) => m.conversation_id === (c.conversation_id || c.id)).map((m: any) => ({
+        id: m.id, sender: m.sender || "client", text: m.text || "", timestamp: m.timestamp || "Agora", status: m.status || undefined })),
+    };
+  });
+
+  const quoteList = quotes.rows.map((x: any) => ({
+    id: x.quote_id || x.id, clientId: x.customer_id, clientName: x.client_name || "", company: x.company || "",
+    code: x.code || x.quote_id || x.id, number: x.code || x.quote_id || x.id,
+    title: x.doc?.produto || "Orçamento", status: (x.status || "Rascunho"),
+    totalGeral: Number(x.total_geral || 0), date: x.date || "", dueDate: x.due_date || "", validUntil: x.due_date || "",
+    items: x.doc?.items || [], notes: x.doc?.notes || "",
+  }));
+
   res.json({
-    clients: clients.rows.map((x) => merge(x, { id: x.id })),
-    deals: deals.rows.map((x) => merge(x, { id: x.id, stage: x.stage })),
-    conversations: convs.map((c) => ({
-      ...merge(c, { id: c.id }),
-      unreadCount: c.unread_count,
-      lastMessage: c.last_message,
-      lastMessageTime: c.last_message_time,
-      messages: msgs.filter((m) => m.conversation_id === c.id).map((m) => ({
-        id: m.id, sender: m.sender, text: m.text, timestamp: m.timestamp, status: m.status || undefined })),
-    })),
-    orders: await loadOrders(),
-    quotes: quotes.rows.map((x) => merge(x, { id: x.id, status: x.status })),
-    tasks: tasks.rows.map((t) => ({ id: t.id, title: t.title, completed: t.completed, dueDate: t.due_date || undefined })),
-    activities: activities.rows.map((a) => ({ id: a.id, title: a.title, subtitle: a.subtitle, timeAgo: a.time_ago, type: a.type })),
-    alerts: alerts.rows.map((a) => ({ id: a.id, title: a.title, subtitle: a.subtitle, type: a.type })),
-    automations: automations.rows.map((x) => merge(x, { id: x.id, isActive: x.is_active })),
+    clients,
+    deals,
+    conversations: convList,
+    orders,
+    quotes: quoteList,
+    tasks: tasks.rows.map((t: any) => ({ id: t.id, title: t.title, completed: t.completed, dueDate: t.due_date || undefined })),
+    activities: activities.rows.map((a: any) => ({ id: a.id, title: a.title, subtitle: a.subtitle, timeAgo: a.time_ago, type: a.type })),
+    alerts: alerts.rows.map((a: any) => ({ id: a.id, title: a.title, subtitle: a.subtitle, type: a.type })),
+    automations: automations.rows.map((x: any) => ({ ...(x.doc || {}), id: x.id, isActive: x.is_active })),
     companySettings: settings.rows[0]?.doc || null,
     aiMode: AI.aiMode(),
   });

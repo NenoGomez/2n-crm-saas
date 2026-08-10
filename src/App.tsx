@@ -225,6 +225,8 @@ export default function App() {
               tasks={tasks}
               setTasks={setTasks}
               deals={deals}
+              quotes={quotes}
+              orders={orders}
             />
           )}
 
