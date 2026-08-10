@@ -10,8 +10,8 @@
  * Modo aditivo — não altera ai.ts nem routes.ts existentes.
  */
 
-import fs from "fs";
-import path from "path";
+import * as fs from "fs";
+import * as path from "path";
 
 /* ============================ TIPOS ============================ */
 export type Modality = "text" | "image" | "pdf" | "audio" | "video";
@@ -19,7 +19,7 @@ export type PoolName = "MULTIMODAL" | "TEXT" | "IMAGE" | "PDF" | "AUDIO" | "VIDE
 
 export interface ProviderConfig {
   id: string;
-  provider: "google" | "openrouter" | "openai";
+  provider: "google" | "openrouter" | "openai" | "groq";
   model: string;
   apiKeyEnv: string;
   capabilities: Modality[];
@@ -188,8 +188,11 @@ async function callOpenAI(p: ProviderConfig, key: string, input: AIInput): Promi
   const content: any[] = [];
   if (input.text) content.push({ type: "text", text: input.text });
   for (const im of input.images || []) content.push({ type: "image_url", image_url: { url: `data:${im.mime_type};base64,${im.data}` } });
-  // openrouter/openai: apenas text+image neste escopo
-  const r = await fetch(p.provider === "openrouter" ? "https://openrouter.ai/api/v1/chat/completions" : "https://api.openai.com/v1/chat/completions", {
+  // openrouter/openai/groq: text+image neste escopo (groq é openai-compatible)
+  const url = p.provider === "openrouter" ? "https://openrouter.ai/api/v1/chat/completions"
+    : p.provider === "groq" ? "https://api.groq.com/openai/v1/chat/completions"
+    : "https://api.openai.com/v1/chat/completions";
+  const r = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}`, ...(p.provider === "openrouter" ? { "HTTP-Referer": "https://2npublicidade.online", "X-Title": "2N CRM" } : {}) },
     body: JSON.stringify({ model: p.model, messages: [{ role: "user", content }], ...(input.json ? { response_format: { type: "json_object" } } : {}) }),
@@ -201,6 +204,23 @@ async function callOpenAI(p: ProviderConfig, key: string, input: AIInput): Promi
   }
   const j = await r.json();
   return j?.choices?.[0]?.message?.content || "";
+}
+
+// Whisper (Groq) transcreve áudio -> texto (não é "áudio multimodal", é transcrição)
+async function transcribeWhisper(model: string, key: string, audio: { mime_type: string; data: string }): Promise<string> {
+  const form = new FormData();
+  form.append("model", model);
+  form.append("file", new Blob([Buffer.from(audio.data, "base64")], { type: audio.mime_type }), "audio.bin");
+  const r = await fetch("https://api.groq.com/openai/v1/audio/transcriptions", {
+    method: "POST", headers: { Authorization: `Bearer ${key}` }, body: form as any,
+  });
+  if (!r.ok) {
+    const t = await r.text();
+    if (r.status === 429) throw new Error("RATE_LIMITED:" + t.slice(0, 120));
+    throw new Error(`whisper ${r.status}: ${t.slice(0, 200)}`);
+  }
+  const j = await r.json();
+  return j?.text || "";
 }
 
 /* ============================ TELEGRAM ============================ */
@@ -225,10 +245,30 @@ export async function generate(input: AIInput, opts: { retries?: number } = {}):
   // MULTIMODAL-FIRST: se há imagem/audio/pdf/video, força pool MULTIMODAL
   const targetPool = isMultimodal ? "MULTIMODAL" : (input.pool || "TEXT");
 
+  // ÁUDIO: se há áudio mas nenhum provider MULTIMODAL capaz de áudio disponível,
+  // transcreve via Whisper (Groq) e trata como texto (não degrada silenciosamente).
+  let workInput = input;
+  if (input.audio?.length && !capableProviders(["audio"], "MULTIMODAL").length) {
+    const wp = providers.find(p => p.enabled && p.capabilities.includes("audio") && p.provider === "groq");
+    if (wp) {
+      try {
+        const key = process.env[wp.apiKeyEnv];
+        const transcript = await transcribeWhisper(wp.model, key!, input.audio[0]);
+        workInput = { ...input, audio: [], text: (input.text ? input.text + "\n" : "") + "[áudio transcrito]: " + transcript };
+        await alert(`🎙️ Áudio transcrito via Whisper (${wp.id}).`);
+      } catch (e: any) {
+        await alert(`⚠️ Falha na transcrição Whisper: ${e.message.slice(0, 80)}`);
+      }
+    }
+  }
+  const workMods = detectModalities(workInput);
+  const workIsMM = workMods.length > 1 || workMods.some(m => m !== "text");
+  const workPool = workIsMM ? "MULTIMODAL" : (workInput.pool || "TEXT");
+
   const retries = opts.retries ?? 2;
   let lastErr: any = null;
   for (let attempt = 0; attempt <= retries; attempt++) {
-    const p = selectProvider(mods, targetPool);
+    const p = selectProvider(workMods, workPool);
     if (!p) {
       lastErr = new Error(`nenhum provider capaz para ${mods.join("+")} no pool ${targetPool}`);
       // tenta pool TEXT como último recurso se não era já texto-puro
@@ -264,7 +304,7 @@ export function statusReport() {
     rateLimit: "ACTIVE", loadBalancer: "ACTIVE", retry: "ACTIVE", circuitBreaker: "ACTIVE",
     fallback: "ACTIVE", queue: "ACTIVE", healthCheck: "ACTIVE",
     telegram: !!(process.env.TELEGRAM_BOT_TOKEN && process.env.TELEGRAM_ALERT_CHAT_ID),
-    metrics, health: Object.fromEntries([...health.entries()].map(([k,v]) => [k, { status: v.status, failures: v.totalFailures, latency: v.avgLatencyMs, breaker: v.breakerOpen }])),
+    metrics, health: Object.fromEntries(Array.from(health.entries()).map(([k,v]) => [k, { status: v.status, failures: v.totalFailures, latency: v.avgLatencyMs, breaker: v.breakerOpen }])),
   };
 }
 

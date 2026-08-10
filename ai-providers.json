@@ -7,6 +7,10 @@
     { "id": "openrouter-mm", "provider": "openrouter", "model": "openai/gpt-4o-mini", "apiKeyEnv": "OPENROUTER_API_KEY",
       "capabilities": ["text","image"], "priority": 80, "weight": 5, "enabled": true, "pool": "MULTIMODAL" },
     { "id": "openrouter-txt", "provider": "openrouter", "model": "openai/gpt-4o-mini", "apiKeyEnv": "OPENROUTER_API_KEY",
-      "capabilities": ["text"], "priority": 70, "weight": 5, "enabled": true, "pool": "TEXT" }
+      "capabilities": ["text"], "priority": 70, "weight": 5, "enabled": true, "pool": "TEXT" },
+    { "id": "groq-txt", "provider": "groq", "model": "llama-3.3-70b-versatile", "apiKeyEnv": "GROQ_API_KEY",
+      "capabilities": ["text"], "priority": 60, "weight": 8, "enabled": true, "pool": "TEXT" },
+    { "id": "groq-whisper", "provider": "groq", "model": "whisper-large-v3", "apiKeyEnv": "GROQ_API_KEY",
+      "capabilities": ["audio"], "priority": 90, "weight": 10, "enabled": true, "pool": "AUDIO_POOL" }
   ]
 }
