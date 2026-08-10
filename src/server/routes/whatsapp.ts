@@ -200,6 +200,62 @@ r.post("/webhook", wrap(async (req, res) => {
   });
 }));
 
+/* --------------------------- SYNC CHATWOOT --------------------------- */
+// GET /api/whatsapp/sync  -> importa conversas reais do Chatwoot para o CRM
+r.get("/sync", wrap(async (_req, res) => {
+  const { spawn } = require("child_process");
+  const cp = spawn("/usr/bin/python3", ["/root/crm-saas/chatwoot_sync.py", "--limit", "50"], {
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  let out = "";
+  cp.stdout.on("data", (d) => (out += d));
+  cp.stderr.on("data", (d) => (out += d));
+  cp.on("close", () => {
+    try {
+      const j = JSON.parse(out.trim().split("\n").pop() || "{}");
+      res.json({ ok: true, synced: j.synced || 0, total: j.total || 0 });
+    } catch {
+      res.json({ ok: true, raw: out.slice(-300) });
+    }
+  });
+}));
+
+/* ----------------------------- SEND MSG ----------------------------- */
+// POST /api/whatsapp/send  body: { conversation_id, text }
+r.post("/send", wrap(async (req, res) => {
+  const b = req.body || {};
+  const convId = b.conversation_id || b.conv;
+  const text = b.text || b.message;
+  if (!convId || !text) return res.status(400).json({ error: "conversation_id e text obrigatórios" });
+  const { spawn } = require("child_process");
+  const cp = spawn("/usr/bin/python3", [
+    "/root/crm-saas/chatwoot_send.py", "--conv", String(convId), "--message", String(text),
+  ], { stdio: ["ignore", "pipe", "pipe"] });
+  let out = "";
+  cp.stdout.on("data", (d) => (out += d));
+  cp.stderr.on("data", (d) => (out += d));
+  cp.on("close", () => {
+    const ok = out.includes("ENVIADO");
+    // registar mensagem enviada localmente (para o inbox refletir)
+    (async () => {
+      try {
+        await q(
+          `INSERT INTO chat_messages (id, conversation_id, sender, text, timestamp, status)
+           VALUES ($1,$2,'agent',$3,now(),'sent') ON CONFLICT (id) DO NOTHING`,
+          [`agent-${convId}-${Date.now()}`, String(convId), String(text).slice(0, 2000)]
+        );
+        await q(
+          `UPDATE conversations SET last_message=$2, last_message_time=now() WHERE conversation_id=$1`,
+          [String(convId), String(text).slice(0, 500)]
+        );
+      } catch (e) {
+        console.error("[whatsapp/send] local log", (e as Error).message);
+      }
+    })();
+    res.json({ ok, conversation_id: convId, detail: ok ? null : out.slice(-200) });
+  });
+}));
+
 /* --------------------------- FILE UPLOAD --------------------------- */
 // POST /api/whatsapp/upload  body: { order_id, filename, url? , content_base64? }
 // Saves the file locally under /root/crm-saas/uploads and links to the order.

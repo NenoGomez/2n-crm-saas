@@ -157,28 +157,30 @@ export const AtendimentoView: React.FC<AtendimentoViewProps> = ({
 
     if (!textToSend) setMessageText("");
 
-    // Simulate auto client reply after 1.5s
-    setTimeout(() => {
-      setConversations((prev) =>
-        prev.map((conv) => {
-          if (conv.id === currentConv.id) {
-            const autoMsg: ChatMessage = {
-              id: `m-reply-${Date.now()}`,
-              sender: "client",
-              text: "Excelente! Recebi sua mensagem, vou analisar com a nossa equipe.",
-              timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
-            };
-            return {
-              ...conv,
-              messages: [...conv.messages, autoMsg],
-              lastMessage: autoMsg.text,
-              lastMessageTime: "Agora",
-            };
-          }
-          return conv;
-        })
-      );
-    }, 1800);
+    // Enviar para o Chatwoot (entrega ao cliente via WhatsApp/Email)
+    (async () => {
+      try {
+        const response = await fetch(apiUrl("/whatsapp/send"), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ conversation_id: currentConv!.id, text }),
+        });
+        const data = await response.json();
+        if (!data.ok) console.error("Falha ao enviar:", data.detail);
+      } catch (e) {
+        console.error("Erro envio:", e);
+      }
+    })();
+  };
+
+  const handleSyncChatwoot = async () => {
+    try {
+      await fetch(apiUrl("/whatsapp/sync"), { method: "GET" });
+      // refresh: recarrega bootstrap
+      window.location.reload();
+    } catch (e) {
+      console.error("Erro sync:", e);
+    }
   };
 
   const handleGenerateAiReply = async () => {
@@ -261,6 +263,14 @@ export const AtendimentoView: React.FC<AtendimentoViewProps> = ({
                 >
                   <span className="material-symbols-outlined text-sm">add</span>
                   <span>Nova</span>
+                </button>
+                <button
+                  onClick={handleSyncChatwoot}
+                  className="text-xs text-[#131b2e] font-bold bg-white px-2.5 py-1 rounded-lg border border-[#c6c6cd]/50 flex items-center gap-1 cursor-pointer hover:bg-[#f2f4f6]"
+                  title="Sincronizar conversas do Chatwoot"
+                >
+                  <span className="material-symbols-outlined text-sm">sync</span>
+                  <span>Sync</span>
                 </button>
                 <button
                   onClick={onOpenHermes}
