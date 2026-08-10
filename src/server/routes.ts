@@ -488,7 +488,7 @@ r.get("/bootstrap", wrap(async (_req, res) => {
     tasks: tasks.rows.map((t: any) => ({ id: t.id, title: t.title, completed: t.completed, dueDate: t.due_date || undefined })),
     activities: activities.rows.map((a: any) => ({ id: a.id, title: a.title, subtitle: a.subtitle, timeAgo: a.time_ago, type: a.type })),
     alerts: alerts.rows.map((a: any) => ({ id: a.id, title: a.title, subtitle: a.subtitle, type: a.type })),
-    automations: automations.rows.map((x: any) => ({ ...(x.doc || {}), id: x.id, isActive: x.is_active })),
+    automations: automations.rows.map((x: any) => ({ ...(x.doc || {}), id: x.id, isActive: x.is_active, steps: (x.doc?.steps) || [] })),
     companySettings: settings.rows[0]?.doc || null,
     aiMode: AI.aiMode(),
   });

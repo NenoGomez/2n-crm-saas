@@ -12,7 +12,7 @@ export type NavigationTab =
   | "calendario"
   | "configuracoes";
 
-export type PipelineStage = "NOVO" | "CONTACTADO" | "ORÇAMENTO" | "NEGOCIAÇÃO" | "APROVADO";
+export type PipelineStage = "NOVO" | "CONTACTADO" | "ORÇAMENTO" | "NEGOCIAÇÃO" | "APROVADO" | "CONCLUÍDO";
 
 export type ProductionStage = "PEDIDO" | "ARTE" | "APROVAÇÃO" | "IMPRESSÃO" | "ENTREGA";
 

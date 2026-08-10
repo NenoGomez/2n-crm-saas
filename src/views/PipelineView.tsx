@@ -20,7 +20,19 @@ export const PipelineView: React.FC<PipelineViewProps> = ({
   const [priorityFilter, setPriorityFilter] = useState("Todos");
   const [hermesOnlyFilter, setHermesOnlyFilter] = useState(false);
 
-  const stages: PipelineStage[] = ["NOVO", "CONTACTADO", "ORÇAMENTO", "NEGOCIAÇÃO", "APROVADO"];
+  const stages: PipelineStage[] = ["NOVO", "CONTACTADO", "ORÇAMENTO", "NEGOCIAÇÃO", "APROVADO", "CONCLUÍDO"];
+
+  const persistStage = async (id: string, stage: PipelineStage) => {
+    try {
+      await fetch(`/api/orders/${id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status: stage }),
+      });
+    } catch (e) {
+      console.error("Erro ao persistir estágio", e);
+    }
+  };
 
   // Unique list of assignees for the filter
   const uniqueAssignees = Array.from(
@@ -52,6 +64,7 @@ export const PipelineView: React.FC<PipelineViewProps> = ({
     ORÇAMENTO: "border-amber-500 bg-amber-50 text-amber-900",
     NEGOCIAÇÃO: "border-orange-500 bg-orange-50 text-orange-900",
     APROVADO: "border-emerald-500 bg-emerald-50 text-emerald-900",
+    CONCLUÍDO: "border-gray-700 bg-gray-800 text-white",
   };
 
   const handleDragStart = (e: React.DragEvent, id: string) => {
@@ -71,6 +84,7 @@ export const PipelineView: React.FC<PipelineViewProps> = ({
     setDeals((prev) =>
       prev.map((card) => (card.id === id ? { ...card, stage: targetStage } : card))
     );
+    persistStage(id, targetStage);
     setDraggedCardId(null);
   };
 
@@ -78,6 +92,7 @@ export const PipelineView: React.FC<PipelineViewProps> = ({
     setDeals((prev) =>
       prev.map((card) => (card.id === id ? { ...card, stage: nextStage } : card))
     );
+    persistStage(id, nextStage);
   };
 
   const totalValue = deals.reduce((acc, d) => acc + d.estimatedValue, 0);

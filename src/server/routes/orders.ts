@@ -264,7 +264,24 @@ r.put("/:id", wrap(async (req, res) => {
   if (!sets.length) return res.json({ ...order });
 
   const { rows } = await q(`UPDATE orders SET ${sets.join(", ")} WHERE order_id=$1 RETURNING *`, vals);
-  res.json(rows[0]);
+  const updated = rows[0];
+
+  // FUNIL: ao concluir, contabilizar valor + marcar cliente finalizado
+  if (updated.status === "CONCLUÍDO" || updated.status === "CONCLUIDO") {
+    const value = Number(updated.doc?.total_geral || 0);
+    const already = (await q(`SELECT id FROM sales_realized WHERE order_id=$1 LIMIT 1`, [id])).rows[0];
+    if (!already) {
+      await q(
+        `INSERT INTO sales_realized (order_id, customer_id, value) VALUES ($1,$2,$3)`,
+        [id, updated.customer_id || null, value]
+      );
+    }
+    if (updated.customer_id) {
+      await q(`UPDATE customers SET status='Finalizado' WHERE customer_id=$1`, [updated.customer_id]);
+    }
+  }
+
+  res.json(updated);
 }));
 
 /* ------------------------------ QUOTES ------------------------------ */

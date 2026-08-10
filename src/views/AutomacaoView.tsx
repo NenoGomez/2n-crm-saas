@@ -35,9 +35,9 @@ export const AutomacaoView: React.FC<AutomacaoViewProps> = ({
   const [webhookTestStatus, setWebhookTestStatus] = useState<string | null>(null);
 
   const activeWorkflow =
-    workflows.find((w) => w.id === selectedWorkflowId) || workflows[0];
+    workflows.find((w) => w.id === selectedWorkflowId) || workflows[0] || { id: "", name: "", steps: [], isActive: false };
 
-  const activeNode = activeWorkflow.steps.find((s) => s.id === selectedNodeId);
+  const activeNode = activeWorkflow.steps?.find((s) => s.id === selectedNodeId);
 
   const handleSaveHermesConfig = (e: React.FormEvent) => {
     e.preventDefault();

@@ -60,43 +60,33 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     .filter((d) => d.stage === "APROVADO")
     .reduce((acc, d) => acc + d.estimatedValue, 0);
   
-  // Total current sales for the month (combining baseline approved + state approved)
-  const totalMonthSales = 12400000 + approvedDealsValue;
+  // Total de vendas do mês = soma real dos deals (pipeline) + aprovados
+  const totalMonthSales = vendasMes + approvedDealsValue;
   const goalProgressPercentage = Math.min(
     100,
     Math.round((totalMonthSales / monthlyTarget) * 100)
   );
   const remainingToGoal = Math.max(0, monthlyTarget - totalMonthSales);
 
-  // Recharts Daily Sales Comparison Data
+  // Gráfico de vendas com dados REAIS (deals do pipeline), não mock
+  const realDeals = deals.filter((d: any) => Number(d.estimatedValue || 0) > 0);
+  const buildChart = (slice: number) => {
+    const list = realDeals.slice(0, slice);
+    if (list.length === 0) {
+      return [{ label: "Sem dados", real: 0, meta: Math.round(monthlyTarget / 4) }];
+    }
+    const per = Math.round((monthlyTarget / list.length) || 1);
+    return list.map((d: any, i: number) => ({
+      label: (d.company || d.title || ("Negócio " + (i + 1))).slice(0, 10),
+      real: Number(d.estimatedValue || 0),
+      meta: per,
+    }));
+  };
   const chartDataMap = {
-    hoje: [
-      { label: "08:00", real: 120000, meta: 150000 },
-      { label: "10:00", real: 280000, meta: 250000 },
-      { label: "12:00", real: 450000, meta: 400000 },
-      { label: "14:00", real: 620000, meta: 550000 },
-      { label: "16:00", real: 840500, meta: 750000 },
-    ],
-    "7d": [
-      { label: "Seg", real: 1200000, meta: 1000000 },
-      { label: "Ter", real: 2400000, meta: 2000000 },
-      { label: "Qua", real: 1800000, meta: 2000000 },
-      { label: "Qui", real: 3100000, meta: 2500000 },
-      { label: "Sex", real: 4200000, meta: 3500000 },
-      { label: "Sáb", real: 2100000, meta: 1500000 },
-      { label: "Dom", real: 850000, meta: 800000 },
-    ],
-    "30d": [
-      { label: "Semana 1", real: 2800000, meta: 2500000 },
-      { label: "Semana 2", real: 3400000, meta: 3000000 },
-      { label: "Semana 3", real: 4100000, meta: 3500000 },
-      { label: "Semana 4", real: 5200000, meta: 4500000 },
-    ],
-    "90d": [
-      { label: "Mês 1", real: 11200000, meta: 10000000 },
-      { label: "Mês 2", real: 14800000, meta: 13000000 },
-      { label: "Mês 3", real: 18400000, meta: 16000000 },
-    ],
+    hoje: buildChart(5),
+    "7d": buildChart(7),
+    "30d": buildChart(12),
+    "90d": buildChart(20),
   };
 
   const currentChartData = chartDataMap[revenueTimeframe];
