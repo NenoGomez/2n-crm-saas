@@ -1,0 +1,23 @@
+[Unit]
+Description=2N CRM SaaS (React + Express + Postgres)
+After=network.target postgresql.service
+
+[Service]
+Type=simple
+WorkingDirectory=/root/crm-saas
+Environment=NODE_ENV=production
+Environment=PORT=8095
+Environment=PGHOST=127.0.0.1
+Environment=PGPORT=5432
+Environment=PGUSER=crm_saas
+Environment=PGPASSWORD=crm2n_saas_2026
+Environment=PGDATABASE=crm_saas
+EnvironmentFile=-/root/crm-saas/.env
+ExecStart=/root/.hermes/node/bin/node /root/crm-saas/dist/server.cjs
+Restart=always
+RestartSec=5
+StandardOutput=append:/var/log/crm-saas.log
+StandardError=append:/var/log/crm-saas.log
+
+[Install]
+WantedBy=multi-user.target

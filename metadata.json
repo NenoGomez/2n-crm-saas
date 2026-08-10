@@ -1,0 +1,6 @@
+{
+  "name": "2N Publicidade - CRM Executivo",
+  "description": "CRM Executivo completo para a 2N Publicidade com gestão de vendas, pipeline Kanban, atendimento omnichannel com Hermes AI, controle de produção e gestão de clientes.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
