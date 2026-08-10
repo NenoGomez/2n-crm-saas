@@ -51,11 +51,18 @@ export interface DealCard {
 
 export interface ChatMessage {
   id: string;
-  sender: "client" | "user" | "hermes";
+  messageId?: string;
+  conversationId?: string;
+  customerId?: string;
+  sender: "client" | "user" | "hermes" | "agent";
+  senderType?: "customer" | "bot" | "staff";
+  senderName?: string;
   text: string;
   timestamp: string;
+  messageType?: "text" | "image" | "audio" | "video" | "document" | "file";
+  attachments?: { url: string; name?: string; type?: string }[];
   isRead?: boolean;
-  status?: "sent" | "delivered" | "read";
+  status?: "sent" | "delivered" | "read" | "received";
 }
 
 export interface Conversation {

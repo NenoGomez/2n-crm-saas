@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { Conversation, ChatMessage, PipelineStage } from "../types";
 import { apiUrl } from "../api";
 
@@ -79,6 +79,14 @@ export const AtendimentoView: React.FC<AtendimentoViewProps> = ({
   ];
 
   const currentConv = conversations.find((c) => c.id === activeConvId) || conversations[0];
+
+  const chatScrollRef = useRef<HTMLDivElement>(null);
+  // Scroll automatico para a mensagem mais recente (cronologia real)
+  useEffect(() => {
+    if (chatScrollRef.current) {
+      chatScrollRef.current.scrollTop = chatScrollRef.current.scrollHeight;
+    }
+  }, [currentConv?.id, currentConv?.messages?.length]);
 
   const handleCreateNewChat = (e: React.FormEvent) => {
     e.preventDefault();
@@ -473,30 +481,54 @@ export const AtendimentoView: React.FC<AtendimentoViewProps> = ({
             </div>
 
             {/* Chat Messages Scroll */}
-            <div className="flex-1 overflow-y-auto p-4 space-y-4 bg-[#f8fafc]/50">
-              {currentConv.messages.map((msg) => (
+            <div ref={chatScrollRef} className="flex-1 overflow-y-auto p-4 space-y-4 bg-[#f8fafc]/50">
+              {currentConv.messages.map((msg) => {
+                const st = msg.senderType || (msg.sender === "user" ? "staff" : "customer");
+                const isStaff = st === "staff";
+                const isBot = st === "bot";
+                return (
                 <div
                   key={msg.id}
-                  className={`flex ${msg.sender === "user" ? "justify-end" : "justify-start"}`}
+                  className={`flex ${isStaff ? "justify-end" : "justify-start"}`}
                 >
-                  <div
-                    className={`max-w-[75%] rounded-2xl p-3.5 text-xs leading-relaxed ${
-                      msg.sender === "user"
-                        ? "bg-[#131b2e] text-white rounded-tr-xs shadow-xs"
-                        : "bg-white text-[#191c1e] border border-[#c6c6cd]/40 rounded-tl-xs shadow-xs"
-                    }`}
-                  >
-                    <p>{msg.text}</p>
-                    <span
-                      className={`text-[9px] block text-right mt-1 font-mono ${
-                        msg.sender === "user" ? "text-slate-300" : "text-[#76777d]"
+                  <div className="max-w-[78%]">
+                    <div className="flex items-center gap-1.5 mb-0.5 px-1">
+                      <span className={`text-[10px] font-bold ${isStaff ? "text-[#131b2e]" : isBot ? "text-[#009668]" : "text-[#76777d]"}`}>
+                        {isBot ? "HERMES" : isStaff ? (msg.senderName || "Equipa 2N") : (msg.senderName || "Cliente")}
+                      </span>
+                    </div>
+                    <div
+                      className={`rounded-2xl p-3.5 text-xs leading-relaxed shadow-xs ${
+                        isStaff
+                          ? "bg-[#131b2e] text-white rounded-tr-xs"
+                          : isBot
+                          ? "bg-[#ECFDF5] text-[#131b2e] border border-[#6ffbbe]/60 rounded-tl-xs"
+                          : "bg-white text-[#191c1e] border border-[#c6c6cd]/40 rounded-tl-xs"
                       }`}
                     >
-                      {msg.timestamp}
-                    </span>
+                      <p className="whitespace-pre-wrap">{msg.text}</p>
+                      {msg.attachments && msg.attachments.length > 0 && (
+                        <div className="mt-2 space-y-1">
+                          {msg.attachments.map((a: any, i: number) => (
+                            <a key={i} href={a.url} target="_blank" rel="noreferrer"
+                               className="block text-[11px] underline opacity-80 hover:opacity-100">
+                              📎 {a.name || a.type || "anexo"}
+                            </a>
+                          ))}
+                        </div>
+                      )}
+                      <span
+                        className={`text-[9px] block text-right mt-1 font-mono ${
+                          isStaff ? "text-slate-300" : isBot ? "text-[#009668]" : "text-[#76777d]"
+                        }`}
+                      >
+                        {msg.timestamp}
+                      </span>
+                    </div>
                   </div>
                 </div>
-              ))}
+                );
+              })}
 
               {/* Floating Hermes AI Suggested Reply Card */}
               {currentConv.hermesSuggestedReply && (

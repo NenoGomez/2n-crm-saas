@@ -416,7 +416,7 @@ async function loadOrdersNew() {
 
 r.get("/bootstrap", wrap(async (_req, res) => {
   // NOVA ESTRUTURA: ler de customers/orders/quotes/conversations e mapear para os tipos das views
-  const [customers, ordersRows, quotes, tasks, activities, alerts, automations, settings] = await Promise.all([
+  const [customers, ordersRows, quotes, tasks, activities, alerts, automations, settings, calEvents] = await Promise.all([
     q("SELECT customer_id, name, phone, email, nif, status, (SELECT string_agg(DISTINCT co.name, ', ') FROM customer_companies cc JOIN companies co ON co.company_id=cc.company_id WHERE cc.customer_id=customers.customer_id) AS company FROM customers ORDER BY created_at DESC"),
     q("SELECT * FROM orders ORDER BY created_at DESC"),
     q("SELECT * FROM quotes ORDER BY created_at ASC"),
@@ -425,6 +425,7 @@ r.get("/bootstrap", wrap(async (_req, res) => {
     q("SELECT * FROM alerts ORDER BY created_at ASC"),
     q("SELECT * FROM automations ORDER BY created_at ASC"),
     q("SELECT doc FROM company_settings WHERE id=1"),
+    q("SELECT * FROM calendar_events ORDER BY start_time ASC"),
   ]);
   const { rows: pros } = await q("SELECT * FROM production_orders ORDER BY created_at ASC");
   const { rows: convs } = await q("SELECT * FROM conversations ORDER BY created_at ASC");
@@ -462,12 +463,23 @@ r.get("/bootstrap", wrap(async (_req, res) => {
 
   const convList = convs.map((c: any) => {
     const cust = customers.rows.find((x: any) => x.customer_id === c.customer_id);
+    const list = msgs
+      .filter((m: any) => m.conversation_id === (c.conversation_id || c.id))
+      .sort((a: any, b: any) => new Date(a.created_at || a.timestamp).getTime() - new Date(b.created_at || b.timestamp).getTime())
+      .map((m: any) => ({
+        id: m.id, messageId: m.message_id || m.id, conversationId: m.conversation_id,
+        customerId: m.customer_id || c.customer_id,
+        sender: m.sender || "client",
+        senderType: m.sender_type || (m.sender === "agent" ? "staff" : "customer"),
+        senderName: m.sender_name || (m.sender_type === "customer" ? cust?.name : m.sender_type === "bot" ? "Hermes" : "Equipa 2N"),
+        text: m.text || "", timestamp: m.created_at || m.timestamp || "Agora",
+        messageType: m.message_type || "text", attachments: m.attachments || [], status: m.status || undefined,
+      }));
     return {
       id: c.conversation_id || c.id, clientId: c.customer_id, clientName: cust?.name || c.doc?.cliente || "Cliente",
       company: c.company || "", channel: c.channel || "whatsapp", unreadCount: c.unread_count || 0,
-      lastMessage: c.last_message || "", lastMessageTime: c.last_message_time || "",
-      messages: msgs.filter((m: any) => m.conversation_id === (c.conversation_id || c.id)).map((m: any) => ({
-        id: m.id, sender: m.sender || "client", text: m.text || "", timestamp: m.timestamp || "Agora", status: m.status || undefined })),
+      stage: c.stage || "NOVO", lastMessage: c.last_message || "", lastMessageTime: c.last_message_time || "",
+      messages: list,
     };
   });
 
@@ -491,6 +503,11 @@ r.get("/bootstrap", wrap(async (_req, res) => {
     automations: automations.rows.map((x: any) => ({ ...(x.doc || {}), id: x.id, isActive: x.is_active, steps: (x.doc?.steps) || [] })),
     companySettings: settings.rows[0]?.doc || null,
     aiMode: AI.aiMode(),
+    calendarEvents: calEvents.rows.map((e: any) => ({
+      id: e.id, title: e.title, description: e.description, start: e.start_time, end: e.end_time,
+      allDay: e.all_day, type: e.type, priority: e.priority, customerId: e.customer_id,
+      orderId: e.order_id, conversationId: e.conversation_id, done: e.done, source: e.source,
+    })),
   });
 }));
 

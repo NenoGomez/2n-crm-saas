@@ -60,6 +60,7 @@ export default function App() {
   const [activities, setActivities] = useState<ActivityItem[]>(initialActivities);
   const [alerts] = useState<AlertItem[]>(initialAlerts);
   const [tasks, setTasks] = useState<TaskItem[]>(initialTasks);
+  const [calendarEvents, setCalendarEvents] = useState<any[]>([]);
   const [hermesConfig, setHermesConfig] = useState<HermesConfig>(initialHermesConfig);
   const [companySettings, setCompanySettings] = useState<CompanySettings>(initialCompanySettings);
 
@@ -78,6 +79,7 @@ export default function App() {
       if (boot.orders?.length) setOrders(boot.orders as ProductionOrder[]);
       if (boot.quotes?.length) setQuotes(boot.quotes as Quote[]);
       if (boot.tasks?.length) setTasks(boot.tasks as TaskItem[]);
+      if (boot.calendarEvents?.length) setCalendarEvents(boot.calendarEvents as any[]);
       if (boot.activities?.length) setActivities(boot.activities as ActivityItem[]);
       if (boot.companySettings) setCompanySettings(boot.companySettings as CompanySettings);
       setDataSource("api");
@@ -303,7 +305,7 @@ export default function App() {
             <RelatoriosView deals={deals} clients={clients} orders={orders} />
           )}
 
-          {activeTab === "calendario" && <CalendarioView />}
+          {activeTab === "calendario" && <CalendarioView events={calendarEvents} />}
 
           {activeTab === "configuracoes" && (
             <ConfiguracoesView
