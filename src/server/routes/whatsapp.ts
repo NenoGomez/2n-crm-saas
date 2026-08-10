@@ -213,11 +213,46 @@ async function audit(actor: string, entity: string, entity_id: string | null, ac
     );
   } catch (e) { console.error("[audit]", (e as Error).message); }
 }
+
+const HERMES_SYSTEM = `És o Hermes, assistente executivo da 2N Publicidade (Luanda, Angola).
+Responde em português de Angola, tom profissional e cordial.
+REGRA CRÍTICA: NUNCA reveles que és IA nem uses frases de IA ("como uma IA", "posso ajudar como assistente virtual").
+NUNCA envies imagem/vídeo sem o cliente pedir. Máximo 3 imagens se necessário.
+Fecha sempre com "Ficou esclarecido?" ou "Pretende avançar?".
+Se o cliente pedir algo crítico (cancelar pedido, alterar valor, confirmar pagamento, marcar concluído), responde apenas que vais submeter ao equipo para confirmação — NÃO confirmes tu.
+Sê conciso (2-4 frases).`;
+
+async function generateBotReply(text: string, history: string[], context: string): Promise<string> {
+  const prompt = `${HERMES_SYSTEM}\n\nCONTEXTO: ${context}\nHISTÓRICO:\n${history.slice(-6).join("\n")}\n\nMENSAGEM DO CLIENTE: ${text}\n\nResponde ao cliente:`;
+  const out = await aiGenerate({ text: prompt, json: false });
+  return (out || "Estamos a analisar o seu pedido. Em breve um elemento da equipa 2N responderá.").toString().slice(0, 1000);
+}
+
+function isCritical(text: string): boolean {
+  const t = text.toLowerCase();
+  return /(cancelar\s+(o\s+)?pedido|anular\s+(o\s+)?pedido|alterar\s+(o\s+)?valor|mudar\s+(o\s+)?preço|confirmar\s+(o\s+)?pagamento|ja\s+paguei|marcar\s+(como\s+)?concluido|dar\s+como\s+concluido|cancelar\s+(a\s+)?encomenda)/.test(t);
+}
+
 r.get("/test-extract", wrap(async (req, res) => {
   const text = String(req.query.text || "");
   if (!text) return res.status(400).json({ error: "missing ?text=" });
   const data = await extractLead(text);
   res.json({ text, extracted: data });
+}));
+
+r.get("/auto-reply", wrap(async (_req, res) => {
+  const { rows } = await q(`SELECT doc FROM company_settings WHERE id=1`);
+  const on = (rows[0]?.doc?.autoReply === true) || (process.env.AUTO_REPLY === "true");
+  res.json({ enabled: !!on });
+}));
+r.post("/auto-reply", wrap(async (req, res) => {
+  const b = req.body || {};
+  const enabled = !!b.enabled;
+  process.env.AUTO_REPLY = enabled ? "true" : "false";
+  const { rows: cur } = await q(`SELECT doc FROM company_settings WHERE id=1`);
+  const merged = { ...(cur[0]?.doc || {}), autoReply: enabled };
+  await q(`UPDATE company_settings SET doc = $1::jsonb WHERE id=1`, [JSON.stringify(merged)]);
+  res.json({ enabled });
 }));
 
 /* ----------------------------- WEBHOOK ----------------------------- */
@@ -304,6 +339,36 @@ r.post("/webhook", wrap(async (req, res) => {
     // mesmo sem intenção de compra, se há prazo detetado, cria tarefa
     const taskId = await createTaskFromConv(ctx, customer_id, null, convId);
     if (taskId) await audit("Hermes", "task", taskId, "created", "due_date", null, ctx.data_entrega || ctx.prazo_texto, "whatsapp");
+  }
+
+  // 6) Auto-resposta Hermes (bot) — apenas se ativo
+  const { rows: st } = await q(`SELECT doc FROM company_settings WHERE id=1`);
+  const stDoc = (st[0] as any)?.doc || {};
+  const autoReplyOn = (process.env.AUTO_REPLY === "true") || (stDoc.autoReply === true);
+  if (autoReplyOn && convId) {
+    const { rows: hist } = await q(
+      `SELECT sender, text FROM chat_messages WHERE conversation_id=$1 ORDER BY created_at DESC LIMIT 10`,
+      [convId]
+    );
+    const history = hist.map((m: any) => (m.sender === "client" ? `Cliente: ${m.text}` : `Hermes: ${m.text}`)).reverse();
+    const context = `Cliente ${name}; Canal whatsapp; ${lead.intent === "compra" ? "Interesse em compra" : "Lead"}`;
+    if (isCritical(text)) {
+      const suggested = await generateBotReply(text, history, context);
+      await q(
+        `UPDATE conversations SET doc = jsonb_set(doc, '{hermesSuggestedReply}', to_jsonb($2::text)) WHERE conversation_id=$1`,
+        [convId, String(suggested)]
+      );
+      await audit("Hermes", "conversation", convId || null, "suggested", "hermesSuggestedReply", null, String(suggested).slice(0, 200), "whatsapp");
+    } else {
+      const reply = await generateBotReply(text, history, context);
+      await sendWhatsapp(name, reply);
+      await q(
+        `INSERT INTO chat_messages (id, conversation_id, sender, sender_type, sender_name, text, timestamp, status)
+         VALUES ($1,$2,'hermes','bot','Hermes',$3,now(),'sent') ON CONFLICT (id) DO NOTHING`,
+        [`hermes-${convId}-${Date.now()}`, convId, String(reply)]
+      );
+      await audit("Hermes", "message", "bot", "sent", "text", null, String(reply).slice(0, 200), "whatsapp");
+    }
   }
 
   res.json({
