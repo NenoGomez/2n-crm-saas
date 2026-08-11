@@ -85,6 +85,8 @@ const normalizePhone = (p: string) => String(p || "").replace(/\D/g, "");
 async function geminiRaw(prompt: string, asJson = false): Promise<string> {
   const key = process.env.GEMINI_API_KEY;
   if (!key) return "";
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 8000);
   try {
     const body: any = { contents: [{ parts: [{ text: prompt }] }] };
     if (asJson) body.generationConfig = { responseMimeType: "application/json" };
@@ -92,11 +94,38 @@ async function geminiRaw(prompt: string, asJson = false): Promise<string> {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
+      signal: ctrl.signal,
     });
+    clearTimeout(timer);
     if (!r.ok) { console.error("[gemini] status", r.status, (await r.text()).slice(0, 200)); return ""; }
     const j = await r.json();
     return (j?.candidates?.[0]?.content?.parts?.[0]?.text || "").toString();
-  } catch (e) { console.error("[gemini] erro", (e as Error).message); return ""; }
+  } catch (e) { clearTimeout(timer); console.error("[gemini] erro", (e as Error).message); return ""; }
+}
+
+/** Fallback Groq (usado quando Gemini falha por quota/erro). */
+async function groqRaw(prompt: string): Promise<string> {
+  const key = process.env.GROQ_API_KEY;
+  if (!key) { console.error("[groq] sem key"); return ""; }
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 8000);
+  try {
+    const r = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
+      body: JSON.stringify({ model: "llama-3.3-70b-versatile", messages: [{ role: "user", content: prompt }] }),
+      signal: ctrl.signal,
+    });
+    clearTimeout(timer);
+    if (r.ok) {
+      const j = await r.json();
+      const out = j?.choices?.[0]?.message?.content;
+      if (out && out.trim().length > 2) return out.toString().trim().slice(0, 1000);
+    } else {
+      console.error("[groq] status", r.status, (await r.text()).slice(0, 200));
+    }
+  } catch (e) { clearTimeout(timer); console.error("[groq] erro", (e as Error).message); }
+  return "";
 }
 
 /** Extract structured lead data from free text using Hermes (Gemini). */
@@ -108,7 +137,7 @@ Extraia um objeto JSON com estes campos exatos:
   "ficheiros": boolean, "observacoes": string, "pedido": string, "estado": string }
 Mensagem: """${text}"""
 Responda APENAS o JSON, sem comentários.`;
-  const out = await geminiRaw(prompt, true);
+  const out = await geminiRaw(prompt, true) || await groqRaw(prompt);
   if (out) {
     try {
       const m = out.match(/\{[\s\S]*\}/);
@@ -175,7 +204,7 @@ Se nao houver data exata mas houver expressao relativa (amanha, sexta, daqui a 3
 Mensagem: """${text}"""
 Responda APENAS o JSON.`;
   const local = parsePtDate(text);
-  const out = await geminiRaw(prompt, true);
+  const out = await geminiRaw(prompt, true) || await groqRaw(prompt);
   let parsed: any = null;
   if (out) {
     try { const m = out.match(/\{[\s\S]*\}/); if (m) parsed = JSON.parse(m[0]); } catch {}
@@ -197,8 +226,8 @@ Responda APENAS o JSON.`;
   return {
     produto: p.produto || (t.includes("flyer") ? "flyer" : t.includes("banner") ? "banner" : ""),
     quantidade: p.quantidade || (t.match(/\d[\d.\s]*\d|\d/g) || []).join("").replace(/\s/g, "") || undefined,
-    prazo_texto: p.prazo_texto || null,
-    data_entrega: p.data_entrega || null,
+    prazo_texto: p.prazo_texto || local.raw || null,
+    data_entrega: p.data_entrega || (local.date ? local.date.toISOString().slice(0, 10) : null),
     hora_entrega: p.hora_entrega || local.hour || null,
     prioridade: p.prioridade || prio,
     urgencia: (p.prioridade === "URGENTE" || p.prioridade === "CRITICA" || prio === "URGENTE"),
@@ -245,9 +274,45 @@ Fecha sempre com "Ficou esclarecido?" ou "Pretende avançar?".
 Se o cliente pedir algo crítico (cancelar pedido, alterar valor, confirmar pagamento, marcar concluído), responde apenas que vais submeter ao equipo para confirmação — NÃO confirmes tu.
 Sê conciso (2-4 frases).`;
 
-async function generateBotReply(text: string, history: string[], context: string): Promise<string> {
-  const prompt = `${HERMES_SYSTEM}\n\nCONTEXTO: ${context}\nHISTÓRICO:\n${history.slice(-6).join("\n")}\n\nMENSAGEM DO CLIENTE: ${text}\n\nResponde ao cliente:`;
-  // Força Gemini direto (modelo gemini-3.6-flash que funciona com a tua chave)
+async function generateBotReply(text: string, history: string[], context: any): Promise<string> {
+  // context pode ser string (legacy) ou objeto rico
+  const ctxObj = typeof context === "string" ? { resumo: context } : (context || {});
+  const histStr = (history && history.length) ? history.join("\n") : "(sem histórico)";
+  const prompt = `${HERMES_SYSTEM}
+
+=== CONTEXTO COMPLETO DO CLIENTE (WhatsApp é a fonte principal) ===
+${ctxObj.resumo || ""}
+${ctxObj.cliente ? `CLIENTE: ${ctxObj.cliente.nome || ""} ${ctxObj.cliente.empresa ? "(" + ctxObj.cliente.empresa + ")" : ""} | tel ${ctxObj.cliente.phone || ""}` : ""}
+${ctxObj.pedido ? `PEDIDO ATUAL (${ctxObj.pedido.order_id}):
+- Produto: ${ctxObj.pedido.produto || "?"}
+- Quantidade: ${ctxObj.pedido.quantidade || "?"}
+- Dimensões: ${ctxObj.pedido.dimensões || ctxObj.pedido.dimensoes || "?"}
+- Material: ${ctxObj.pedido.material || "?"}
+- Acabamento: ${ctxObj.pedido.acabamento || "?"}
+- Prazo: ${ctxObj.pedido.prazo || "?"}
+- Valor: ${ctxObj.pedido.valor || "?"}
+- Estado: ${ctxObj.pedido.estado || "?"}
+- Ficheiros recebidos: ${ctxObj.pedido.ficheiros || "nenhum"}` : "PEDIDO ATUAL: ainda não existe pedido estruturado."}
+${ctxObj.falta ? `INFORMAÇÕES EM FALTA para concluir o pedido: ${ctxObj.falta.join(", ")}` : ""}
+${ctxObj.jaPerguntado ? `O QUE O HERMES JÁ PERGUNTOU ANTES (NÃO REPETIR): ${ctxObj.jaPerguntado}` : ""}
+${ctxObj.pedidosAnteriores ? `PEDIDOS ANTERIORES DESTE CLIENTE: ${ctxObj.pedidosAnteriores}` : ""}
+
+=== HISTÓRICO DA CONVERSA (WhatsApp) ===
+${histStr}
+
+=== MENSAGEM ATUAL DO CLIENTE ===
+${text}
+
+=== INSTRUÇÕES DE COMPORTAMENTO ===
+1. Analisa a MENSAGEM ATUAL em conjunto com o HISTÓRICO e o PEDIDO ATUAL. NUNCA responds com uma frase fixa genérica.
+2. Se a mensagem for uma NOVA PERGUNTA sobre OUTRO ASSUNTO (ex: entrega, pagamento, outro produto), responde DIRETAMENTE a essa pergunta usando o contexto disponível. Não digas "estamos a analisar".
+3. Se a mensagem estiver RELACIONADA com o pedido em curso, podes dizer "Isso faz parte do seu pedido, já estamos a tratar" apenas se fizer sentido — mas responde a dúvida concreta.
+4. Se faltarem informações para o pedido (vê "INFORMAÇÕES EM FALTA"), pergunta APENAS o que falta, de forma natural e curta. NÃO perguntes o que já foi fornecido ou o que já perguntaste.
+5. Se o cliente enviou ficheiro/arte, confirma a receção e diz o próximo passo (validação humana ou produção).
+6. Se o cliente disser "igual ao pedido anterior", consulta PEDIDOS ANTERIORES e reusa os dados — não perguntes tudo de novo.
+7. Mantém memória: não entres em loop, não repitas respostas, não ignores a nova mensagem.
+8. Fecha com "Ficou esclarecido?" ou "Pretende avançar?".
+Responde como o Hermes (assistente humano da 2N), 2-4 frases, português de Angola.`;
   const key = process.env.GEMINI_API_KEY;
   if (key) {
     try {
@@ -259,16 +324,18 @@ async function generateBotReply(text: string, history: string[], context: string
       if (r.ok) {
         const j = await r.json();
         const out = j?.candidates?.[0]?.content?.parts?.[0]?.text;
-        if (out) return out.toString().slice(0, 1000);
+        if (out && out.trim().length > 2) return out.toString().trim().slice(0, 1000);
       } else {
-        const t = await r.text();
-        console.error("[gemini-direct] status", r.status, t.slice(0, 200));
+        console.error("[gemini-direct] status", r.status, (await r.text()).slice(0, 200));
       }
     } catch (e) {
       console.error("[gemini-direct] erro", (e as Error).message);
     }
   }
-  return "Estamos a analisar o seu pedido. Em breve um elemento da equipa 2N responderá.";
+  // fallback: tenta Groq; só se ambos falharem, usa frase neutra
+  const g = await groqRaw(prompt);
+  if (g) return g;
+  return "Recebemos a sua mensagem. Um momento que já lhe respondo com os detalhes.";
 }
 
 function isCritical(text: string): boolean {
@@ -276,11 +343,89 @@ function isCritical(text: string): boolean {
   return /(cancelar\s+(o\s+)?pedido|anular\s+(o\s+)?pedido|alterar\s+(o\s+)?valor|mudar\s+(o\s+)?preço|confirmar\s+(o\s+)?pagamento|ja\s+paguei|marcar\s+(como\s+)?concluido|dar\s+como\s+concluido|cancelar\s+(a\s+)?encomenda)/.test(t);
 }
 
+/**
+ * Monta o contexto RICO para o Hermes responder com memória.
+ * WhatsApp é a fonte principal: lê pedido atual, cliente, ficheiros,
+ * o que já foi perguntado e pedidos anteriores.
+ */
+async function buildContext(convId: string, customer_id: string | null, lead: any): Promise<any> {
+  const ctx: any = { resumo: "" };
+  if (customer_id) {
+    const { rows: cl } = await q(`SELECT * FROM customers WHERE customer_id=$1`, [customer_id]);
+    if (cl[0]) ctx.cliente = { nome: cl[0].name, empresa: cl[0].company, phone: cl[0].phone, email: cl[0].email };
+  }
+  let order_id: string | null = null;
+  if (customer_id) {
+    const { rows: open } = await q(
+      `SELECT o.order_id, o.status, o.doc FROM orders o WHERE o.customer_id=$1 AND o.status IN ('NOVO','ORÇAMENTO','EM PRODUÇÃO','AGUARDANDO CLIENTE','AGUARDANDO PAGAMENTO','EM ANÁLISE') ORDER BY o.created_at DESC LIMIT 1`,
+      [customer_id]
+    );
+    if (open[0]) {
+      order_id = open[0].order_id;
+      const d = open[0].doc || {};
+      const { rows: po } = await q(`SELECT * FROM production_orders WHERE order_id=$1 LIMIT 1`, [order_id]);
+      const { rows: pf } = await q(`SELECT name, type, status FROM production_files WHERE order_id=$1`, [order_id]);
+      ctx.pedido = {
+        order_id,
+        produto: d.produto || po[0]?.product_description || "",
+        quantidade: d.quantidade || "",
+        dimensoes: d.dimensoes || d.dimensões || "",
+        material: d.material || "",
+        acabamento: d.acabamento || "",
+        prazo: d.prazo || po[0]?.due_date || "",
+        valor: d.valor || d.total_geral || "",
+        estado: open[0].status,
+        ficheiros: pf.map((f: any) => `${f.name} (${f.status})`).join(", ") || "nenhum",
+      };
+    }
+  }
+  if (order_id) {
+    await q(`UPDATE conversations SET doc=jsonb_set(COALESCE(doc,'{}'),'{pedidoFoco}',to_jsonb($2::text)) WHERE conversation_id=$1`, [convId, order_id]);
+  } else {
+    const { rows: cv } = await q(`SELECT doc->>'pedidoFoco' AS pf FROM conversations WHERE conversation_id=$1`, [convId]);
+    if (cv[0]?.pf) {
+      const { rows: o2 } = await q(`SELECT o.order_id, o.status, o.doc FROM orders o WHERE o.order_id=$1`, [cv[0].pf]);
+      if (o2[0]) {
+        order_id = o2[0].order_id;
+        const d = o2[0].doc || {};
+        ctx.pedido = { order_id, produto: d.produto || "", quantidade: d.quantidade || "", dimensoes: d.dimensoes || "", material: d.material || "", acabamento: d.acabamento || "", prazo: d.prazo || "", valor: d.valor || "", estado: o2[0].status, ficheiros: "ver anexos" };
+      }
+    }
+  }
+  const { rows: cv2 } = await q(`SELECT doc->>'jaPerguntado' AS jp FROM conversations WHERE conversation_id=$1`, [convId]);
+  if (cv2[0]?.jp) ctx.jaPerguntado = cv2[0].jp;
+  if (customer_id && order_id) {
+    const { rows: ant } = await q(
+      `SELECT order_id, doc FROM orders WHERE customer_id=$1 AND order_id != $2 AND status NOT IN ('NOVO','ORÇAMENTO','EM PRODUÇÃO') ORDER BY created_at DESC LIMIT 3`,
+      [customer_id, order_id]
+    );
+    if (ant.length) ctx.pedidosAnteriores = ant.map((a: any) => `${a.order_id}: ${a.doc?.produto || "?"} x${a.doc?.quantidade || "?"}`).join(" | ");
+  }
+  const campos = ["produto", "quantidade", "dimensoes", "material", "acabamento", "prazo"];
+  const falta: string[] = [];
+  if (lead?.intent === "compra" || ctx.pedido) {
+    for (const c of campos) {
+      const v = (ctx.pedido && (ctx.pedido[c] || ctx.pedido[c === "dimensoes" ? "dimensoes" : c])) || (lead && lead[c]);
+      if (!v || v === "?" || v === "") falta.push(c);
+    }
+    if (falta.length) ctx.falta = falta;
+  }
+  ctx.resumo = `Cliente ${ctx.cliente?.nome || "WhatsApp"}; Canal whatsapp; ${lead?.intent === "compra" || ctx.pedido ? "Pedido em curso" : "Lead"}.`;
+  return ctx;
+}
+
 r.get("/test-extract", wrap(async (req, res) => {
   const text = String(req.query.text || "");
   if (!text) return res.status(400).json({ error: "missing ?text=" });
   const data = await extractLead(text);
   res.json({ text, extracted: data });
+}));
+
+r.get("/test-bot", wrap(async (req, res) => {
+  const text = String(req.query.text || "Quero 10 banners");
+  const hist = String(req.query.hist || "").split("|").filter(Boolean);
+  const reply = await generateBotReply(text, hist, { resumo: "teste", falta: ["dimensoes", "material"] });
+  res.json({ text, reply });
 }));
 
 r.get("/auto-reply", wrap(async (_req, res) => {
@@ -340,8 +485,10 @@ r.post("/webhook", wrap(async (req, res) => {
   }
 
   // 2) Hermes extraction (lead + contexto/prazos)
-  const lead = await extractLead(text);
+  let lead: any = {};
+  try { lead = await extractLead(text); } catch (e) { require("fs").appendFileSync("/tmp/evo_debug.log", `extractLead ERR: ${(e as Error).message}\n`); }
   const ctx = await extractContext(text);
+  require("fs").appendFileSync("/tmp/evo_debug.log", `lead.intent=${lead.intent} produto=${lead.produto} qtd=${lead.quantidade}\n`);
 
   // 3) If purchase intent -> create/update order + optional quote
   let order_id: string | null = null;
@@ -452,7 +599,7 @@ async function sendEvolutionMessage(phone: string, text: string): Promise<void> 
   }
 }
 
-async function storeAttachment(phone: string, msgObj: any): Promise<{ url: string; name: string; mime: string; size: number } | null> {
+async function storeAttachment(phone: string, msgObj: any): Promise<{ url: string; name: string; mime: string; size: number; kind: string } | null> {
   try {
     const img = msgObj.imageMessage || msgObj.videoMessage || msgObj.documentMessage || msgObj.audioMessage;
     if (!img) return null;
@@ -470,7 +617,16 @@ async function storeAttachment(phone: string, msgObj: any): Promise<{ url: strin
     const buf = Buffer.from(await r.arrayBuffer());
     require("fs").writeFileSync(local, buf);
     const rel = `/production/${require("path").basename(local)}`;
-    return { url: rel, name: fileName, mime, size: buf.length };
+    // Classificar tipo de ficheiro (ponto 8 do briefing)
+    const lower = (fileName + " " + caption).toLowerCase();
+    let kind = "arte";
+    if (/(logo|logotipo|marca)/.test(lower)) kind = "logotipo";
+    else if (/(comprov|pagamento|recibo|transf|iban|factur|fatura)/.test(lower)) kind = "comprovativo";
+    else if (/(ref|exemplo|modelo|amostra)/.test(lower)) kind = "referencia";
+    else if (/(foto|imagem|fotografia)/.test(lower)) kind = "fotografia";
+    else if (/(pdf|doc|docx|txt)/.test(lower) || mime.includes("pdf") || mime.includes("word")) kind = "documento";
+    else if (/(producao|print|final|arte_final)/.test(lower)) kind = "ficheiro_producao";
+    return { url: rel, name: fileName, mime, size: buf.length, kind };
   } catch (e) {
     console.error("[store] erro", (e as Error).message);
     return null;
@@ -499,7 +655,6 @@ r.post("/evolution-webhook", wrap(async (req, res) => {
     (msgObj.documentMessage && msgObj.documentMessage.caption) ||
     (msgObj.videoMessage && msgObj.videoMessage.caption) ||
     "";
-
   const convId = `evo-${phone}`;
   const customer_id = await resolveCustomer({ name: pushName, phone, email: null });
 
@@ -522,8 +677,10 @@ r.post("/evolution-webhook", wrap(async (req, res) => {
     [`evo-${convId}-${Date.now()}`, convId, String(text || "[arte]"), `evo-${key.id || Date.now()}`, JSON.stringify(attachments)]
   );
 
-  const lead = await extractLead(text || "envio de arte para producao");
-  const ctx = await extractContext(text);
+  let lead: any = {};
+  try { lead = await extractLead(text || "envio de arte para producao"); } catch (e) { console.error("[evo] extractLead", (e as Error).message); }
+  let ctx: any = {};
+  try { ctx = await extractContext(text); } catch (e) { console.error("[evo] extractContext", (e as Error).message); }
 
   // Qualificar lead: marcar customer como lead
   if (customer_id) {
@@ -537,25 +694,59 @@ r.post("/evolution-webhook", wrap(async (req, res) => {
     );
   }
 
-  // Se intenção de compra e não enviou arte -> criar/atualizar pedido + tarefa
+  // Se intenção de compra e não enviou arte -> criar/atualizar pedido estruturado + tarefa
   if (lead.intent === "compra" && !att) {
-    // encontrar pedido aberto deste cliente
-    const { rows: open } = await q(
-      `SELECT o.order_id FROM orders o WHERE o.customer_id=$1 AND o.status IN ('NOVO','ORÇAMENTO','EM PRODUÇÃO') ORDER BY o.created_at DESC LIMIT 1`,
-      [customer_id]
-    );
-    let order_id = open[0]?.order_id || null;
+    // Usar pedido em foco (memória) APENAS se o pedido ainda existir — NÃO duplicar
+    const { rows: foco } = await q(`SELECT doc->>'pedidoFoco' AS pf FROM conversations WHERE conversation_id=$1`, [convId]);
+    const focoId = (foco[0]?.pf && foco[0].pf !== "") ? foco[0].pf : null;
+    let order_id: string | null = null;
+    if (focoId) {
+      const { rows: ex } = await q(`SELECT order_id FROM orders WHERE order_id=$1`, [focoId]);
+      if (ex[0]) order_id = focoId;
+    }
     if (!order_id) {
-      order_id = await genId("PED", "orders-YYYY");
+      const { rows: open } = await q(
+        `SELECT o.order_id FROM orders o WHERE o.customer_id=$1 AND o.status IN ('NOVO','ORÇAMENTO','EM PRODUÇÃO','AGUARDANDO CLIENTE','EM ANÁLISE') ORDER BY o.created_at DESC LIMIT 1`,
+        [customer_id]
+      );
+      order_id = open[0]?.order_id || null;
+    }
+    const docPedido = {
+      source: "whatsapp",
+      produto: lead.produto || "",
+      quantidade: lead.quantidade || "",
+      dimensoes: lead.dimensoes || "",
+      material: lead.material || "",
+      acabamento: lead.acabamento || "",
+      prazo: ctx.prazo_texto || lead.prazo || "",
+      valor: lead.preco || "",
+      observacoes: lead.observacoes || "",
+    };
+    if (!order_id) {
+      try {
+        order_id = await genId("PED", "orders-YYYY");
+      } catch (e) {
+        console.error("[evo] genId", (e as Error).message);
+        order_id = `PED-${new Date().getFullYear()}-${Date.now()}`;
+      }
       await q(
         `INSERT INTO orders (order_id, customer_id, conversation_id, status, doc)
-         VALUES ($1,$2,$3,'EM PRODUÇÃO',$4)`,
-        [order_id, customer_id, convId, JSON.stringify({ source: "whatsapp_arte" })]
+         VALUES ($1,$2,$3,'EM ANÁLISE',$4)`,
+        [order_id, customer_id, convId, JSON.stringify(docPedido)]
       );
     } else {
-      await q(`UPDATE orders SET status='EM PRODUÇÃO' WHERE order_id=$1`, [order_id]);
+      // atualizar campos já conhecidos sem perder os existentes
+      await q(`UPDATE orders SET doc=jsonb_set(COALESCE(doc,'{}'),'{produto}',to_jsonb($2::text)), status=COALESCE(NULLIF(status,''),'EM ANÁLISE') WHERE order_id=$1`,
+        [order_id, docPedido.produto || ""]);
+      await q(`UPDATE orders SET doc=jsonb_set(doc,'{quantidade}',to_jsonb($2::text)) WHERE order_id=$1 AND $2::text <> ''`, [order_id, String(docPedido.quantidade || "")]);
+      await q(`UPDATE orders SET doc=jsonb_set(doc,'{dimensoes}',to_jsonb($2::text)) WHERE order_id=$1 AND $2::text <> ''`, [order_id, docPedido.dimensoes || ""]);
+      await q(`UPDATE orders SET doc=jsonb_set(doc,'{material}',to_jsonb($2::text)) WHERE order_id=$1 AND $2::text <> ''`, [order_id, docPedido.material || ""]);
+      await q(`UPDATE orders SET doc=jsonb_set(doc,'{acabamento}',to_jsonb($2::text)) WHERE order_id=$1 AND $2::text <> ''`, [order_id, docPedido.acabamento || ""]);
+      await q(`UPDATE orders SET doc=jsonb_set(doc,'{prazo}',to_jsonb($2::text)) WHERE order_id=$1 AND $2::text <> ''`, [order_id, docPedido.prazo || ""]);
     }
-    // garantir production_order (para quando enviar arte depois)
+    // memória: guardar pedido em foco
+    await q(`UPDATE conversations SET doc=jsonb_set(COALESCE(doc,'{}'),'{pedidoFoco}',to_jsonb($2::text)) WHERE conversation_id=$1`, [convId, order_id]);
+    // garantir production_order
     const { rows: po } = await q(`SELECT production_id FROM production_orders WHERE order_id=$1`, [order_id]);
     let prod_id = po[0]?.production_id || null;
     if (!prod_id) {
@@ -568,14 +759,40 @@ r.post("/evolution-webhook", wrap(async (req, res) => {
     }
   }
 
-  // Se enviou arte -> garantir production_files + notificar
-  if (att) {
-    // encontrar pedido aberto deste cliente
-    const { rows: open } = await q(
-      `SELECT o.order_id FROM orders o WHERE o.customer_id=$1 AND o.status IN ('NOVO','ORÇAMENTO','EM PRODUÇÃO') ORDER BY o.created_at DESC LIMIT 1`,
+  // PRAZO -> tarefa/calendar_event (ponto 13 do briefing) — corre SEMPRE que haja prazo detetado
+  if (ctx.data_entrega || ctx.prazo_texto) {
+    // encontrar pedido deste cliente (aberto ou o em foco)
+    const { rows: focoC } = await q(`SELECT doc->>'pedidoFoco' AS pf FROM conversations WHERE conversation_id=$1`, [convId]);
+    const { rows: openC } = await q(
+      `SELECT o.order_id FROM orders o WHERE o.customer_id=$1 AND o.status IN ('NOVO','ORÇAMENTO','EM PRODUÇÃO','AGUARDANDO CLIENTE','EM ANÁLISE') ORDER BY o.created_at DESC LIMIT 1`,
       [customer_id]
     );
-    let order_id = open[0]?.order_id || null;
+    let order_id_prazo = (focoC[0]?.pf && focoC[0].pf !== "") ? focoC[0].pf : (openC[0]?.order_id || null);
+    if (order_id_prazo) {
+      const { rows: ex } = await q(`SELECT order_id FROM orders WHERE order_id=$1`, [order_id_prazo]);
+      if (!ex[0]) order_id_prazo = null;
+    }
+    const due = ctx.data_entrega ? new Date(ctx.data_entrega + "T" + (ctx.hora_entrega || "09:00")) : null;
+    const title = `Prazo: ${lead.produto || "Pedido"} (${order_id_prazo || "sem pedido"})`;
+    await q(`INSERT INTO tasks (id, title, due_date, due_time, priority, origin, customer_id, order_id, doc_json)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT DO NOTHING`,
+      [await genId("TASK", "tasks"), title, due ? due.toISOString().slice(0,10) : null, ctx.hora_entrega || null, ctx.urgencia ? "URGENTE" : "NORMAL", "whatsapp", customer_id, order_id_prazo, JSON.stringify({ source: "whatsapp", conversation_id: convId })]);
+    if (due) {
+      await q(`INSERT INTO calendar_events (title, description, start_time, type, priority, customer_id, order_id, conversation_id, source, doc)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT DO NOTHING`,
+        [title, `Prazo combinado via WhatsApp (${ctx.prazo_texto || ctx.hora_entrega || ""})`, due.toISOString(), ctx.urgencia ? "URGENTE" : "NORMAL", customer_id || null, order_id_prazo || null, convId, "whatsapp", JSON.stringify({ conversation_id: convId })]);
+    }
+  }
+
+  // Se enviou arte -> garantir production_files + notificar + validação humana
+  if (att) {
+    // Usar pedido em foco (memória) ou o aberto mais recente — NÃO duplicar
+    const { rows: focoA } = await q(`SELECT doc->>'pedidoFoco' AS pf FROM conversations WHERE conversation_id=$1`, [convId]);
+    const { rows: openA } = await q(
+      `SELECT o.order_id FROM orders o WHERE o.customer_id=$1 AND o.status IN ('NOVO','ORÇAMENTO','EM PRODUÇÃO','AGUARDANDO CLIENTE','EM ANÁLISE') ORDER BY o.created_at DESC LIMIT 1`,
+      [customer_id]
+    );
+    let order_id = focoA[0]?.pf || openA[0]?.order_id || null;
     if (!order_id) {
       order_id = await genId("PED", "orders-YYYY");
       await q(
@@ -583,10 +800,11 @@ r.post("/evolution-webhook", wrap(async (req, res) => {
          VALUES ($1,$2,$3,'EM PRODUÇÃO',$4)`,
         [order_id, customer_id, convId, JSON.stringify({ source: "whatsapp_arte" })]
       );
-    } else {
-      await q(`UPDATE orders SET status='EM PRODUÇÃO' WHERE order_id=$1`, [order_id]);
+    } else if (att.kind === "arte" || att.kind === "ficheiro_producao") {
+      // arte recebida -> aguarda validação humana (ponto 9)
+      await q(`UPDATE orders SET status='AGUARDANDO APROVAÇÃO' WHERE order_id=$1 AND status NOT IN ('CONCLUIDO','ENTREGUE')`, [order_id]);
     }
-    // garantir production_order (precisa existir antes de production_files)
+    // garantir production_order
     const { rows: po } = await q(`SELECT production_id FROM production_orders WHERE order_id=$1`, [order_id]);
     let prod_id = po[0]?.production_id || null;
     if (!prod_id) {
@@ -597,28 +815,28 @@ r.post("/evolution-webhook", wrap(async (req, res) => {
         [prod_id, prod_id, order_id, customer_id]
       );
     }
-    // production_file (order_id referencia production_orders.id)
+    // production_file (order_id referencia production_orders.id), com tipo classificado
     const file_id = await genId("FILE", "files-YYYY");
     await q(
       `INSERT INTO production_files (id, file_id, order_id, customer_id, name, type, size, url, uploaded_at, status)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,now(),'recebido') ON CONFLICT DO NOTHING`,
-      [file_id, file_id, prod_id, customer_id, att.name, att.mime, att.size, att.url]
+      [file_id, file_id, prod_id, customer_id, att.name, att.kind || att.mime, att.size, att.url]
     );
     // notificar equipa
     await audit("Hermes", "production_file", file_id, "received", "storage_url", att.url, "whatsapp");
   }
 
-  // Auto-resposta Hermes (bot)
+  // Auto-resposta Hermes (bot) — com memória de contexto
   const { rows: st } = await q(`SELECT doc FROM company_settings WHERE id=1`);
   const stDoc = (st[0] as any)?.doc || {};
   const autoReplyOn = (process.env.AUTO_REPLY === "true") || (stDoc.autoReply === true);
   if (autoReplyOn) {
     const { rows: hist } = await q(
-      `SELECT sender, text FROM chat_messages WHERE conversation_id=$1 ORDER BY created_at DESC LIMIT 10`,
+      `SELECT sender, text FROM chat_messages WHERE conversation_id=$1 ORDER BY created_at DESC LIMIT 15`,
       [convId]
     );
     const history = hist.map((m: any) => (m.sender === "client" ? `Cliente: ${m.text}` : `Hermes: ${m.text}`)).reverse();
-    const context = `Cliente ${pushName}; Canal whatsapp; ${lead.intent === "compra" || att ? "Produção/Arte" : "Lead"}`;
+    const context = await buildContext(convId, customer_id, lead);
     if (isCritical(text)) {
       const suggested = await generateBotReply(text, history, context);
       await q(
@@ -633,6 +851,9 @@ r.post("/evolution-webhook", wrap(async (req, res) => {
          VALUES ($1,$2,'hermes','bot','Hermes',$3,now(),'sent') ON CONFLICT (id) DO NOTHING`,
         [`hermes-${convId}-${Date.now()}`, convId, String(reply)]
       );
+      // Guardar o que foi perguntado (para não repetir depois)
+      const perguntou = (context.jaPerguntado ? context.jaPerguntado + "; " : "") + reply.slice(0, 120);
+      await q(`UPDATE conversations SET doc=jsonb_set(COALESCE(doc,'{}'),'{jaPerguntado}',to_jsonb($2::text)) WHERE conversation_id=$1`, [convId, perguntou]);
     }
   }
 
