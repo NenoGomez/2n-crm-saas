@@ -252,6 +252,23 @@ CREATE TABLE IF NOT EXISTS deals (
   stage TEXT DEFAULT 'NOVO', priority TEXT, doc JSONB NOT NULL DEFAULT '{}'::jsonb,
   created_at TIMESTAMPTZ DEFAULT now()
 );
+-- ============ VOZ / CHAMADAS (Twilio + ElevenLabs) ============
+CREATE TABLE IF NOT EXISTS calls (
+  id TEXT PRIMARY KEY,
+  direction TEXT NOT NULL DEFAULT 'inbound', -- inbound | outbound
+  customer_id TEXT,
+  order_id TEXT,
+  phone TEXT,
+  purpose TEXT, -- confirmacao | lembrete | cobranca | atendimento | outro
+  status TEXT DEFAULT 'iniciada', -- iniciada | em_curso | concluida | falhou | sem_resposta
+  transcript TEXT, -- STT do cliente
+  hermes_said TEXT, -- o que o Hermes falou (TTS)
+  duration_sec INT,
+  call_sid TEXT,
+  doc JSONB NOT NULL DEFAULT '{}'::jsonb,
+  created_at TIMESTAMPTZ DEFAULT now(),
+  ended_at TIMESTAMPTZ
+);
 `;
 
 export async function initSchema() {

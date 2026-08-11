@@ -556,5 +556,67 @@ Responda em português, executivo, direto, com markdown quando útil.`;
   res.json({ reply: out || AI.fallbackChat(message, crmData), mode: out ? AI.aiMode() : "local-fallback" });
 }));
 
+/* ============ VOZ / TWILIO + ELEVENLABS ============ */
+import * as Voice from "./voice";
+
+// Atendedor automático (Twilio → quando cliente liga)
+r.post("/voice/inbound", wrap(async (req, res) => {
+  await Voice.voiceInbound(req, res);
+}));
+
+// Chamada outbound iniciada pelo Hermes (Twilio → faz a chamada)
+r.post("/voice/outbound", wrap(async (req, res) => {
+  // Cria a chamada via Twilio REST API
+  const TW_SID = process.env.TWILIO_ACCOUNT_SID;
+  const TW_TOKEN = process.env.TWILIO_AUTH_TOKEN;
+  const TW_NUMBER = process.env.TWILIO_NUMBER;
+  const { phone, purpose, order_id, customer_id } = req.body || {};
+  if (!TW_SID || !TW_TOKEN || !TW_NUMBER) {
+    // Sem Twilio: devolve só o TwiML para teste manual
+    return Voice.voiceOutboundTwiml(req, res);
+  }
+  const url = `${process.env.PUBLIC_URL || "https://2npublicidade.online"}/api/voice/outbound-twiml?phone=${encodeURIComponent(phone)}&purpose=${purpose || "outro"}&order_id=${order_id || ""}&customer_id=${customer_id || ""}`;
+  const auth = Buffer.from(`${TW_SID}:${TW_TOKEN}`).toString("base64");
+  const r2 = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${TW_SID}/Calls.json`, {
+    method: "POST",
+    headers: { Authorization: `Basic ${auth}`, "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({ To: phone, From: TW_NUMBER, Url: url }).toString(),
+  });
+  if (!r2.ok) return res.status(502).json({ error: "Twilio falhou: " + (await r2.text()).slice(0, 200) });
+  const j = await r2.json();
+  return res.json({ ok: true, callSid: j.sid, status: j.status });
+}));
+
+// TwiML para a chamada outbound (Twilio faz GET aqui quando liga)
+r.post("/voice/outbound-twiml", wrap(async (req, res) => {
+  await Voice.voiceOutboundTwiml(req, res);
+}));
+r.get("/voice/outbound-twiml", wrap(async (req, res) => {
+  await Voice.voiceOutboundTwiml(req, res);
+}));
+
+// Áudio gerado pela ElevenLabs (servido ao Twilio)
+r.get("/voice/audio/:file", wrap(async (req, res) => {
+  const fs = require("fs");
+  const path = require("path");
+  const file = path.join("/root/crm-saas/public/voice", req.params.file);
+  if (!fs.existsSync(file)) return res.status(404).json({ error: "não encontrado" });
+  res.type("audio/mpeg").send(fs.readFileSync(file));
+}));
+
+// Transcrição de áudio (Groq Whisper, grátis) — usado se quiseres STT próprio
+r.post("/voice/transcribe", wrap(async (req, res) => {
+  const { audioUrl } = req.body || {};
+  if (!audioUrl) return res.status(400).json({ error: "audioUrl obrigatório" });
+  const text = await Voice.groqWhisper(audioUrl);
+  res.json({ text });
+}));
+
+// Listar chamadas (inbox de voz)
+r.get("/voice/calls", wrap(async (req, res) => {
+  const { rows } = await q(`SELECT * FROM calls ORDER BY created_at DESC LIMIT 50`);
+  res.json(rows);
+}));
+
 export default r;
 export { express };
