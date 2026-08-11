@@ -258,14 +258,21 @@ r.post("/auto-reply", wrap(async (req, res) => {
 /* ----------------------------- WEBHOOK ----------------------------- */
 r.post("/webhook", wrap(async (req, res) => {
   const b = req.body || {};
-  // Chatwoot payload shapes vary; be tolerant.
+  // Chatwoot AgentBot + webhook payload shapes vary; be tolerant.
   const conv = b.conversation || b.conversation_data || {};
   const contact = b.contact || b.sender || b.contact_data || {};
-  const msg = b.message || b.content || b.message_data || {};
-  const text = msg.content || msg.text || b.text || "";
-  const phone = contact.phone || contact.phone_number || (contact.identifier || "");
-  const name = contact.name || contact.full_name || "Cliente";
-  const convId = String(conv.id ?? b.conversation_id ?? "");
+  const msg = b.message || b.message_data || {};
+  const text = b.content || msg.content || msg.text || b.text || "";
+  const phone = contact.phone || contact.phone_number || (contact.identifier || "") || (b.meta && b.meta.sender && b.meta.sender.phone_number) || "";
+  const name = contact.name || contact.full_name || (b.meta && b.meta.sender && b.meta.sender.name) || "Cliente";
+  const convId = String(conv.id ?? b.conversation_id ?? b.conversation?.id ?? "");
+  const msgType = b.message_type || msg.message_type || "";
+  const senderType = (contact.type || b.sender?.type || (b.meta && b.meta.sender && b.meta.sender.type) || "").toLowerCase();
+
+  // AgentBot: so responde a mensagens recebidas do CLIENTE (nao da minha propria resposta)
+  if (msgType === "outgoing" || senderType === "user" || senderType === "agent" || senderType === "agent_bot") {
+    return res.json({ ok: true, skipped: "not incoming from contact" });
+  }
 
   if (!text) return res.json({ ok: true, skipped: "no text" });
 
