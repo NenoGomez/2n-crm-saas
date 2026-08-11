@@ -90,7 +90,23 @@ export default function App() {
     };
   }, []);
 
-  // Modals & Drawers
+  // Polling: manter conversas/mensagens em tempo real (WhatsApp via Evolution)
+  useEffect(() => {
+    let cancelled = false;
+    const tick = async () => {
+      try {
+        const r = await fetch(apiUrl("/conversations"), { headers: { "Content-Type": "application/json" } });
+        if (!r.ok) return;
+        const data = await r.json();
+        if (cancelled || !Array.isArray(data)) return;
+        setConversations(data as Conversation[]);
+      } catch {}
+    };
+    const iv = setInterval(tick, 5000);
+    return () => { cancelled = true; clearInterval(iv); };
+  }, []);
+
+  // Modais & Drawers
   const [isHermesOpen, setIsHermesOpen] = useState(false);
   const [isNewSaleOpen, setIsNewSaleOpen] = useState(false);
   const [isNewClientOpen, setIsNewClientOpen] = useState(false);

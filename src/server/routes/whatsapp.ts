@@ -118,8 +118,13 @@ Responda APENAS o JSON, sem comentários.`;
   // Heuristic fallback
   const t = text.toLowerCase();
   const num = (t.match(/\d[\d.\s]*\d|\d/g) || []).join("");
-  const intent = /(quero|preciso|comprar|fazer|orç|orc|banner|adesiv|impress|encomend|pedid)/.test(t) ? "compra" : "outro";
-  return { intent, cliente: "", empresa: "", produto: t.includes("banner") ? "banner" : "", quantidade: num ? Number(num.replace(/\s/g, "")) : undefined, medidas: "", preco: undefined, prazo: "", localizacao: "", ficheiros: false, observacoes: text, pedido: "", estado: intent === "compra" ? "NOVO" : "" };
+  const prodRe = /(quero|preciso|comprar|fazer|orç|orc|banner|adesiv|impress|encomend|pedid|flyer|cart[ãa]o|cartaz|folheto|etiquet|brochur|livro|revista|calend[áa]rio|caneca|tela|stand|roll|fixe|topo| wob|lona|adesivo|autocol|camis|serviço|servico|logotip|logotip|site|panflet)/;
+  const intent = prodRe.test(t) ? "compra" : "outro";
+  let produto = "";
+  for (const p of ["flyer","banner","adesivo","cartão","cartao","cartaz","folheto","etiqueta","brochura","livro","revista","calendário","calendario","caneca","tela","stand","roll up","topo de mesa","lona","camisa","logotipo","site","panfleto"]) {
+    if (t.includes(p)) { produto = p; break; }
+  }
+  return { intent, cliente: "", empresa: "", produto, quantidade: num ? Number(num.replace(/\s/g, "")) : undefined, medidas: "", preco: undefined, prazo: "", localizacao: "", ficheiros: false, observacoes: text, pedido: "", estado: intent === "compra" ? "NOVO" : "" };
 }
 
 /* ------------------- EXTRAÇÃO DE PRAZOS / CONTEXTO ------------------- */
@@ -447,10 +452,34 @@ async function sendEvolutionMessage(phone: string, text: string): Promise<void> 
   }
 }
 
+async function storeAttachment(phone: string, msgObj: any): Promise<{ url: string; name: string; mime: string; size: number } | null> {
+  try {
+    const img = msgObj.imageMessage || msgObj.videoMessage || msgObj.documentMessage || msgObj.audioMessage;
+    if (!img) return null;
+    const mediaUrl = img.url || (img.jpgThumbnail ? null : null);
+    const caption = msgObj.imageMessage?.caption || msgObj.documentMessage?.caption || msgObj.videoMessage?.caption || "";
+    const fileName = (msgObj.documentMessage?.fileName) || `arte_${Date.now()}.${img.mimetype?.split("/")[1] || "bin"}`;
+    const mime = img.mimetype || "application/octet-stream";
+    if (!mediaUrl) return null;
+    // download
+    const dir = "/root/crm-saas/public/production";
+    require("fs").mkdirSync(dir, { recursive: true });
+    const local = `${dir}/${phone}_${Date.now()}_${fileName.replace(/[^\w.\-]/g, "_")}`;
+    const r = await fetch(mediaUrl, { headers: { apikey: EVO_KEY } });
+    if (!r.ok) { console.error("[store] download falhou", r.status); return null; }
+    const buf = Buffer.from(await r.arrayBuffer());
+    require("fs").writeFileSync(local, buf);
+    const rel = `/production/${require("path").basename(local)}`;
+    return { url: rel, name: fileName, mime, size: buf.length };
+  } catch (e) {
+    console.error("[store] erro", (e as Error).message);
+    return null;
+  }
+}
+
 r.post("/evolution-webhook", wrap(async (req, res) => {
   const b = req.body || {};
   const event = b.event || "";
-  // So processa mensagens recebidas (nao as minhas respostas)
   if (event !== "messages.upsert") return res.json({ ok: true, skipped: "not messages.upsert" });
 
   const data = b.data || {};
@@ -458,19 +487,18 @@ r.post("/evolution-webhook", wrap(async (req, res) => {
   const fromMe = key.fromMe === true;
   if (fromMe) return res.json({ ok: true, skipped: "outgoing" });
 
+  try {
   const remoteJid = key.remoteJid || "";
   const phone = remoteJid.replace("@s.whatsapp.net", "").replace("@c.us", "");
   const pushName = data.pushName || "Cliente";
-  // texto pode vir em varios campos
   const msgObj = data.message || {};
   const text =
     msgObj.conversation ||
     (msgObj.extendedTextMessage && msgObj.extendedTextMessage.text) ||
     (msgObj.imageMessage && msgObj.imageMessage.caption) ||
     (msgObj.documentMessage && msgObj.documentMessage.caption) ||
+    (msgObj.videoMessage && msgObj.videoMessage.caption) ||
     "";
-
-  if (!text) return res.json({ ok: true, skipped: "no text" });
 
   const convId = `evo-${phone}`;
   const customer_id = await resolveCustomer({ name: pushName, phone, email: null });
@@ -478,20 +506,107 @@ r.post("/evolution-webhook", wrap(async (req, res) => {
   await q(
     `INSERT INTO conversations (conversation_id, customer_id, channel, last_message, last_message_time, doc)
      VALUES ($1,$2,'whatsapp',$3,now(),$4) ON CONFLICT (conversation_id) DO NOTHING`,
-    [convId, customer_id, String(text).slice(0, 500), JSON.stringify({ source: "evolution" })]
+    [convId, customer_id, String(text || "[arte enviada]").slice(0, 500), JSON.stringify({ source: "evolution" })]
   );
   await q(
     `UPDATE conversations SET customer_id=COALESCE($2,customer_id), last_message=$3, last_message_time=now() WHERE conversation_id=$1`,
-    [convId, customer_id, String(text).slice(0, 500)]
+    [convId, customer_id, String(text || "[arte enviada]").slice(0, 500)]
   );
+
+  // anexo (arte) -> Area de Producao
+  const att = await storeAttachment(phone, msgObj);
+  const attachments = att ? [att] : [];
   await q(
     `INSERT INTO chat_messages (id, conversation_id, sender, sender_type, text, timestamp, status, message_id, attachments)
      VALUES ($1,$2,'client','customer',$3,now(),'received',$4,$5) ON CONFLICT (id) DO NOTHING`,
-    [`evo-${convId}-${Date.now()}`, convId, String(text), `evo-${key.id || Date.now()}`, JSON.stringify([])]
+    [`evo-${convId}-${Date.now()}`, convId, String(text || "[arte]"), `evo-${key.id || Date.now()}`, JSON.stringify(attachments)]
   );
 
-  const lead = await extractLead(text);
+  const lead = await extractLead(text || "envio de arte para producao");
   const ctx = await extractContext(text);
+
+  // Qualificar lead: marcar customer como lead
+  if (customer_id) {
+    await q(
+      `UPDATE customers SET status=COALESCE(NULLIF(status,''),'lead') WHERE customer_id=$1`,
+      [customer_id]
+    );
+    await q(
+      `UPDATE conversations SET doc=jsonb_set(COALESCE(doc,'{}'),'{lead}',to_jsonb($2::text)) WHERE conversation_id=$1`,
+      [convId, JSON.stringify({ intent: lead.intent, produto: lead.produto, quantidade: lead.quantidade, empresa: lead.empresa, observacoes: lead.observacoes })]
+    );
+  }
+
+  // Se intenção de compra e não enviou arte -> criar/atualizar pedido + tarefa
+  if (lead.intent === "compra" && !att) {
+    // encontrar pedido aberto deste cliente
+    const { rows: open } = await q(
+      `SELECT o.order_id FROM orders o WHERE o.customer_id=$1 AND o.status IN ('NOVO','ORÇAMENTO','EM PRODUÇÃO') ORDER BY o.created_at DESC LIMIT 1`,
+      [customer_id]
+    );
+    let order_id = open[0]?.order_id || null;
+    if (!order_id) {
+      order_id = await genId("PED", "orders-YYYY");
+      await q(
+        `INSERT INTO orders (order_id, customer_id, conversation_id, status, doc)
+         VALUES ($1,$2,$3,'EM PRODUÇÃO',$4)`,
+        [order_id, customer_id, convId, JSON.stringify({ source: "whatsapp_arte" })]
+      );
+    } else {
+      await q(`UPDATE orders SET status='EM PRODUÇÃO' WHERE order_id=$1`, [order_id]);
+    }
+    // garantir production_order (para quando enviar arte depois)
+    const { rows: po } = await q(`SELECT production_id FROM production_orders WHERE order_id=$1`, [order_id]);
+    let prod_id = po[0]?.production_id || null;
+    if (!prod_id) {
+      prod_id = await genId("PRD", "prod-YYYY");
+      await q(
+        `INSERT INTO production_orders (id, production_id, order_id, customer_id, stage, status_badge, created_at)
+         VALUES ($1,$2,$3,$4,'recebido','aberto',now())`,
+        [prod_id, prod_id, order_id, customer_id]
+      );
+    }
+  }
+
+  // Se enviou arte -> garantir production_files + notificar
+  if (att) {
+    // encontrar pedido aberto deste cliente
+    const { rows: open } = await q(
+      `SELECT o.order_id FROM orders o WHERE o.customer_id=$1 AND o.status IN ('NOVO','ORÇAMENTO','EM PRODUÇÃO') ORDER BY o.created_at DESC LIMIT 1`,
+      [customer_id]
+    );
+    let order_id = open[0]?.order_id || null;
+    if (!order_id) {
+      order_id = await genId("PED", "orders-YYYY");
+      await q(
+        `INSERT INTO orders (order_id, customer_id, conversation_id, status, doc)
+         VALUES ($1,$2,$3,'EM PRODUÇÃO',$4)`,
+        [order_id, customer_id, convId, JSON.stringify({ source: "whatsapp_arte" })]
+      );
+    } else {
+      await q(`UPDATE orders SET status='EM PRODUÇÃO' WHERE order_id=$1`, [order_id]);
+    }
+    // garantir production_order (precisa existir antes de production_files)
+    const { rows: po } = await q(`SELECT production_id FROM production_orders WHERE order_id=$1`, [order_id]);
+    let prod_id = po[0]?.production_id || null;
+    if (!prod_id) {
+      prod_id = await genId("PRD", "prod-YYYY");
+      await q(
+        `INSERT INTO production_orders (id, production_id, order_id, customer_id, stage, status_badge, created_at)
+         VALUES ($1,$2,$3,$4,'recebido','aberto',now())`,
+        [prod_id, prod_id, order_id, customer_id]
+      );
+    }
+    // production_file (order_id referencia production_orders.id)
+    const file_id = await genId("FILE", "files-YYYY");
+    await q(
+      `INSERT INTO production_files (id, file_id, order_id, customer_id, name, type, size, url, uploaded_at, status)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,now(),'recebido') ON CONFLICT DO NOTHING`,
+      [file_id, file_id, prod_id, customer_id, att.name, att.mime, att.size, att.url]
+    );
+    // notificar equipa
+    await audit("Hermes", "production_file", file_id, "received", "storage_url", att.url, "whatsapp");
+  }
 
   // Auto-resposta Hermes (bot)
   const { rows: st } = await q(`SELECT doc FROM company_settings WHERE id=1`);
@@ -503,7 +618,7 @@ r.post("/evolution-webhook", wrap(async (req, res) => {
       [convId]
     );
     const history = hist.map((m: any) => (m.sender === "client" ? `Cliente: ${m.text}` : `Hermes: ${m.text}`)).reverse();
-    const context = `Cliente ${pushName}; Canal whatsapp; ${lead.intent === "compra" ? "Interesse em compra" : "Lead"}`;
+    const context = `Cliente ${pushName}; Canal whatsapp; ${lead.intent === "compra" || att ? "Produção/Arte" : "Lead"}`;
     if (isCritical(text)) {
       const suggested = await generateBotReply(text, history, context);
       await q(
@@ -521,7 +636,13 @@ r.post("/evolution-webhook", wrap(async (req, res) => {
     }
   }
 
-  res.json({ ok: true, phone, convId, intent: lead.intent });
+  res.json({ ok: true, phone, convId, intent: lead.intent, hasAttachment: !!att });
+  } catch (e) {
+    const stack = (e as Error).stack || (e as Error).message;
+    console.error("[evo-webhook] erro", stack);
+    require("fs").writeFileSync("/tmp/evo_err.log", String(stack) + "\n");
+    res.status(500).json({ error: (e as Error).message });
+  }
 }));
 
 // GET /api/whatsapp/sync  -> importa conversas reais do Chatwoot para o CRM

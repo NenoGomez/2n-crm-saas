@@ -180,7 +180,7 @@ r.get("/conversations", wrap(async (_req, res) => {
     unreadCount: c.unread_count,
     lastMessage: c.last_message,
     lastMessageTime: c.last_message_time,
-    messages: msgs.filter((m) => m.conversation_id === c.id).map((m) => ({
+    messages: msgs.filter((m) => m.conversation_id === (c.conversation_id || c.id)).map((m) => ({
       id: m.id, sender: m.sender, text: m.text, timestamp: m.timestamp, status: m.status || undefined,
     })),
   })));
