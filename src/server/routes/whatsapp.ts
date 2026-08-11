@@ -81,7 +81,25 @@ function sendWhatsapp(clientName: string, body: string): Promise<string> {
 
 const normalizePhone = (p: string) => String(p || "").replace(/\D/g, "");
 
-/** Extract structured lead data from free text using Hermes (OpenRouter). */
+/** Chama Gemini direto e devolve JSON ou texto. */
+async function geminiRaw(prompt: string, asJson = false): Promise<string> {
+  const key = process.env.GEMINI_API_KEY;
+  if (!key) return "";
+  try {
+    const body: any = { contents: [{ parts: [{ text: prompt }] }] };
+    if (asJson) body.generationConfig = { responseMimeType: "application/json" };
+    const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=${key}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!r.ok) { console.error("[gemini] status", r.status, (await r.text()).slice(0, 200)); return ""; }
+    const j = await r.json();
+    return (j?.candidates?.[0]?.content?.parts?.[0]?.text || "").toString();
+  } catch (e) { console.error("[gemini] erro", (e as Error).message); return ""; }
+}
+
+/** Extract structured lead data from free text using Hermes (Gemini). */
 async function extractLead(text: string): Promise<any> {
   const prompt = `Analise a seguinte mensagem de um cliente da 2N Publicidade (Luanda, Angola).
 Extraia um objeto JSON com estes campos exatos:
@@ -90,7 +108,7 @@ Extraia um objeto JSON com estes campos exatos:
   "ficheiros": boolean, "observacoes": string, "pedido": string, "estado": string }
 Mensagem: """${text}"""
 Responda APENAS o JSON, sem comentários.`;
-  const out = await aiGenerate({ text: prompt, json: true });
+  const out = await geminiRaw(prompt, true);
   if (out) {
     try {
       const m = out.match(/\{[\s\S]*\}/);
@@ -152,7 +170,7 @@ Se nao houver data exata mas houver expressao relativa (amanha, sexta, daqui a 3
 Mensagem: """${text}"""
 Responda APENAS o JSON.`;
   const local = parsePtDate(text);
-  const out = await aiGenerate({ text: prompt, json: true });
+  const out = await geminiRaw(prompt, true);
   let parsed: any = null;
   if (out) {
     try { const m = out.match(/\{[\s\S]*\}/); if (m) parsed = JSON.parse(m[0]); } catch {}
@@ -224,8 +242,28 @@ Sê conciso (2-4 frases).`;
 
 async function generateBotReply(text: string, history: string[], context: string): Promise<string> {
   const prompt = `${HERMES_SYSTEM}\n\nCONTEXTO: ${context}\nHISTÓRICO:\n${history.slice(-6).join("\n")}\n\nMENSAGEM DO CLIENTE: ${text}\n\nResponde ao cliente:`;
-  const out = await aiGenerate({ text: prompt, json: false });
-  return (out || "Estamos a analisar o seu pedido. Em breve um elemento da equipa 2N responderá.").toString().slice(0, 1000);
+  // Força Gemini direto (modelo gemini-3.6-flash que funciona com a tua chave)
+  const key = process.env.GEMINI_API_KEY;
+  if (key) {
+    try {
+      const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=${key}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] }),
+      });
+      if (r.ok) {
+        const j = await r.json();
+        const out = j?.candidates?.[0]?.content?.parts?.[0]?.text;
+        if (out) return out.toString().slice(0, 1000);
+      } else {
+        const t = await r.text();
+        console.error("[gemini-direct] status", r.status, t.slice(0, 200));
+      }
+    } catch (e) {
+      console.error("[gemini-direct] erro", (e as Error).message);
+    }
+  }
+  return "Estamos a analisar o seu pedido. Em breve um elemento da equipa 2N responderá.";
 }
 
 function isCritical(text: string): boolean {
@@ -389,7 +427,103 @@ r.post("/webhook", wrap(async (req, res) => {
   });
 }));
 
-/* --------------------------- SYNC CHATWOOT --------------------------- */
+/* --------------------------- EVOLUTION WEBHOOK --------------------------- */
+// POST /api/whatsapp/evolution-webhook  -> Evolution API envia MESSAGES_UPSERT
+const EVO_BASE = process.env.EVO_BASE || "http://localhost:8080";
+const EVO_KEY = process.env.EVO_KEY || "evo_2n_2npublicidade_2026_x9f3kq";
+const EVO_INSTANCE = process.env.EVO_INSTANCE || "2npublicidade";
+
+async function sendEvolutionMessage(phone: string, text: string): Promise<void> {
+  try {
+    const res = await fetch(`${EVO_BASE}/message/sendText/${EVO_INSTANCE}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", apikey: EVO_KEY },
+      body: JSON.stringify({ number: phone, text: text }),
+    });
+    const j = await res.json().catch(() => ({}));
+    console.log("[evo-send]", res.status, JSON.stringify(j).slice(0, 100));
+  } catch (e) {
+    console.error("[evo-send] erro", (e as Error).message);
+  }
+}
+
+r.post("/evolution-webhook", wrap(async (req, res) => {
+  const b = req.body || {};
+  const event = b.event || "";
+  // So processa mensagens recebidas (nao as minhas respostas)
+  if (event !== "messages.upsert") return res.json({ ok: true, skipped: "not messages.upsert" });
+
+  const data = b.data || {};
+  const key = data.key || {};
+  const fromMe = key.fromMe === true;
+  if (fromMe) return res.json({ ok: true, skipped: "outgoing" });
+
+  const remoteJid = key.remoteJid || "";
+  const phone = remoteJid.replace("@s.whatsapp.net", "").replace("@c.us", "");
+  const pushName = data.pushName || "Cliente";
+  // texto pode vir em varios campos
+  const msgObj = data.message || {};
+  const text =
+    msgObj.conversation ||
+    (msgObj.extendedTextMessage && msgObj.extendedTextMessage.text) ||
+    (msgObj.imageMessage && msgObj.imageMessage.caption) ||
+    (msgObj.documentMessage && msgObj.documentMessage.caption) ||
+    "";
+
+  if (!text) return res.json({ ok: true, skipped: "no text" });
+
+  const convId = `evo-${phone}`;
+  const customer_id = await resolveCustomer({ name: pushName, phone, email: null });
+
+  await q(
+    `INSERT INTO conversations (conversation_id, customer_id, channel, last_message, last_message_time, doc)
+     VALUES ($1,$2,'whatsapp',$3,now(),$4) ON CONFLICT (conversation_id) DO NOTHING`,
+    [convId, customer_id, String(text).slice(0, 500), JSON.stringify({ source: "evolution" })]
+  );
+  await q(
+    `UPDATE conversations SET customer_id=COALESCE($2,customer_id), last_message=$3, last_message_time=now() WHERE conversation_id=$1`,
+    [convId, customer_id, String(text).slice(0, 500)]
+  );
+  await q(
+    `INSERT INTO chat_messages (id, conversation_id, sender, sender_type, text, timestamp, status, message_id, attachments)
+     VALUES ($1,$2,'client','customer',$3,now(),'received',$4,$5) ON CONFLICT (id) DO NOTHING`,
+    [`evo-${convId}-${Date.now()}`, convId, String(text), `evo-${key.id || Date.now()}`, JSON.stringify([])]
+  );
+
+  const lead = await extractLead(text);
+  const ctx = await extractContext(text);
+
+  // Auto-resposta Hermes (bot)
+  const { rows: st } = await q(`SELECT doc FROM company_settings WHERE id=1`);
+  const stDoc = (st[0] as any)?.doc || {};
+  const autoReplyOn = (process.env.AUTO_REPLY === "true") || (stDoc.autoReply === true);
+  if (autoReplyOn) {
+    const { rows: hist } = await q(
+      `SELECT sender, text FROM chat_messages WHERE conversation_id=$1 ORDER BY created_at DESC LIMIT 10`,
+      [convId]
+    );
+    const history = hist.map((m: any) => (m.sender === "client" ? `Cliente: ${m.text}` : `Hermes: ${m.text}`)).reverse();
+    const context = `Cliente ${pushName}; Canal whatsapp; ${lead.intent === "compra" ? "Interesse em compra" : "Lead"}`;
+    if (isCritical(text)) {
+      const suggested = await generateBotReply(text, history, context);
+      await q(
+        `UPDATE conversations SET doc = jsonb_set(doc, '{hermesSuggestedReply}', to_jsonb($2::text)) WHERE conversation_id=$1`,
+        [convId, String(suggested)]
+      );
+    } else {
+      const reply = await generateBotReply(text, history, context);
+      await sendEvolutionMessage(phone, reply);
+      await q(
+        `INSERT INTO chat_messages (id, conversation_id, sender, sender_type, sender_name, text, timestamp, status)
+         VALUES ($1,$2,'hermes','bot','Hermes',$3,now(),'sent') ON CONFLICT (id) DO NOTHING`,
+        [`hermes-${convId}-${Date.now()}`, convId, String(reply)]
+      );
+    }
+  }
+
+  res.json({ ok: true, phone, convId, intent: lead.intent });
+}));
+
 // GET /api/whatsapp/sync  -> importa conversas reais do Chatwoot para o CRM
 r.get("/sync", wrap(async (_req, res) => {
   const { spawn } = require("child_process");
