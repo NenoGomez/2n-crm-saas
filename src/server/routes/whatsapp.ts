@@ -366,18 +366,15 @@ r.post("/webhook", wrap(async (req, res) => {
         [convId, String(suggested)]
       );
       await audit("Hermes", "conversation", convId || null, "suggested", "hermesSuggestedReply", null, String(suggested).slice(0, 200), "whatsapp");
-      // Chatwoot AgentBot: retorna sugestao como message (humano aprova no Inbox)
-      return res.json({ message: `[SUGESTÃO HERMES — aguarda aprovação]\n${suggested}` });
     } else {
       const reply = await generateBotReply(text, history, context);
-      // Chatwoot AgentBot: retorna a resposta; o Chatwoot envia ao cliente
+      await sendWhatsapp(name, reply);
       await q(
         `INSERT INTO chat_messages (id, conversation_id, sender, sender_type, sender_name, text, timestamp, status)
          VALUES ($1,$2,'hermes','bot','Hermes',$3,now(),'sent') ON CONFLICT (id) DO NOTHING`,
         [`hermes-${convId}-${Date.now()}`, convId, String(reply)]
       );
       await audit("Hermes", "message", "bot", "sent", "text", null, String(reply).slice(0, 200), "whatsapp");
-      return res.json({ message: reply });
     }
   }
 
