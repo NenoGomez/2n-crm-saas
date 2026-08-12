@@ -116,6 +116,30 @@ export async function elevenTTS(text: string, callId: string): Promise<string> {
   return `/api/voice/audio/${callId}.mp3`;
 }
 
+/* TTS para chamadas Twilio: ElevenLabs se disponível, senão Google TTS (grátis, PT-PT) */
+async function ttsForVoice(text: string, callId: string): Promise<string> {
+  // 1) ElevenLabs (se key válida e com permissão)
+  if (EL_KEY && EL_VOICE && EL_KEY.startsWith("sk_")) {
+    try {
+      return await elevenTTS(text, callId);
+    } catch (e) {
+      console.error("[voice] eleven falhou, usa google tts", (e as Error).message);
+    }
+  }
+  // 2) Google TTS (grátis, PT-PT)
+  const fs = require("fs");
+  const path = require("path");
+  const dir = "/root/crm-saas/public/voice";
+  fs.mkdirSync(dir, { recursive: true });
+  const file = `${callId}.mp3`;
+  const ttsUrl = `https://translate.google.com/translate_tts?ie=UTF-8&q=${encodeURIComponent(text.slice(0, 400))}&tl=pt-PT&client=tw-ob`;
+  const r = await fetch(ttsUrl, { headers: { "User-Agent": "Mozilla/5.0" } });
+  if (!r.ok) throw new Error("Google TTS falhou: " + r.status);
+  const buf = Buffer.from(await r.arrayBuffer());
+  fs.writeFileSync(path.join(dir, file), buf);
+  return `/api/voice/audio/${file}`;
+}
+
 /* ----------------------------- Groq Whisper STT (GRÁTIS) ----------------------------- */
 export async function groqWhisper(audioUrl: string): Promise<string> {
   if (!GROQ_KEY) throw new Error("GROQ_API_KEY em falta");
@@ -208,9 +232,9 @@ export async function voiceInbound(req: any, res: any) {
        VALUES ($1,'inbound',$2,$3,'atendimento','em_curso',$4,'{}') ON CONFLICT DO NOTHING`,
       [callId, ctx.customer_id, phone, callSid]
     );
-    // TTS via ElevenLabs → Play
+    // TTS (ElevenLabs → Google TTS fallback PT-PT)
     try {
-      const url = await elevenTTS(saudacao, callId);
+      const url = await ttsForVoice(saudacao, callId);
       return res.type("text/xml").send(twimlPlayAudio(url, `/api/voice/inbound?callId=${callId}`, 6));
     } catch {
       // fallback Twilio built-in
@@ -230,7 +254,7 @@ export async function voiceInbound(req: any, res: any) {
   await q(`UPDATE calls SET transcript=COALESCE(transcript,'')||$1, hermes_said=COALESCE(hermes_said,'')||$2 WHERE id=$3`,
     [`\nC: ${transcript}`, `\nH: ${reply}`, callId2]);
   try {
-    const url = await elevenTTS(reply, callId2 + "-r" + Date.now());
+    const url = await ttsForVoice(reply, callId2 + "-r" + Date.now());
     return res.type("text/xml").send(twimlPlayAudio(url, `/api/voice/inbound?callId=${callId2}`, 6));
   } catch {
     return res.type("text/xml").send(twimlSay(reply, { voice: "alice", gather: true, action: `/api/voice/inbound?callId=${callId2}`, finish: 6 }));
@@ -261,7 +285,7 @@ export async function voiceOutbound(req: any, res: any) {
 
   // TwiML inicial (Twilio vailigar e tocar isto)
   try {
-    const url = await elevenTTS(intro, callId);
+    const url = await ttsForVoice(intro, callId);
     return res.type("text/xml").send(twimlPlayAudio(url, `/api/voice/inbound?callId=${callId}`, 6));
   } catch {
     return res.type("text/xml").send(twimlSay(intro, { voice: "alice", gather: true, action: `/api/voice/inbound?callId=${callId}`, finish: 6 }));

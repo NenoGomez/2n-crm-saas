@@ -595,6 +595,15 @@ r.get("/voice/outbound-twiml", wrap(async (req, res) => {
   await Voice.voiceOutboundTwiml(req, res);
 }));
 
+// Áudio gerado pela ElevenLabs (servido ao WhatsApp/Twilio)
+r.get("/voice_audio/:file", wrap(async (req, res) => {
+  const fs = require("fs");
+  const path = require("path");
+  const file = path.join("/root/crm-saas/public/voice", req.params.file);
+  if (!fs.existsSync(file)) return res.status(404).json({ error: "não encontrado" });
+  res.type("audio/mpeg").send(fs.readFileSync(file));
+}));
+
 // Áudio gerado pela ElevenLabs (servido ao Twilio)
 r.get("/voice/audio/:file", wrap(async (req, res) => {
   const fs = require("fs");

@@ -599,6 +599,67 @@ async function sendEvolutionMessage(phone: string, text: string): Promise<void> 
   }
 }
 
+/* Envia áudio (MP3 base64 ou URL) via Evolution */
+async function sendEvolutionAudio(phone: string, audioUrl: string): Promise<void> {
+  try {
+    const res = await fetch(`${EVO_BASE}/message/sendWhatsAppAudio/${EVO_INSTANCE}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", apikey: EVO_KEY },
+      body: JSON.stringify({ number: phone, audio: audioUrl, mimetype: "audio/mpeg" }),
+    });
+    const j = await res.json().catch(() => ({}));
+    console.log("[evo-audio]", res.status, JSON.stringify(j).slice(0, 100));
+  } catch (e) {
+    console.error("[evo-audio] erro", (e as Error).message);
+  }
+}
+
+/* Gera áudio a partir de texto -> devolve URL servida pelo CRM.
+   Tenta ElevenLabs primeiro; se indisponível (conta Free/sem crédito), usa Google TTS (grátis, PT-PT). */
+async function elevenTTSForWhatsApp(text: string): Promise<string | null> {
+  const fs = require("fs");
+  const path = require("path");
+  const dir = "/root/crm-saas/public/voice";
+  fs.mkdirSync(dir, { recursive: true });
+  const file = `wa_${Date.now()}.mp3`;
+  const EL_KEY = process.env.ELEVENLABS_API_KEY;
+  const EL_VOICE = process.env.ELEVENLABS_VOICE_ID;
+
+  // 1) ElevenLabs (se key válida e com permissão)
+  if (EL_KEY && EL_VOICE && EL_KEY.startsWith("sk_")) {
+    try {
+      const r = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${EL_VOICE}`, {
+        method: "POST",
+        headers: { "xi-api-key": EL_KEY, "Content-Type": "application/json" },
+        body: JSON.stringify({ text, model_id: "eleven_multilingual_v2", voice_settings: { stability: 0.4, similarity_boost: 0.7 } }),
+      });
+      if (r.ok) {
+        const buf = Buffer.from(await r.arrayBuffer());
+        fs.writeFileSync(path.join(dir, file), buf);
+        return `${process.env.PUBLIC_URL || "https://2npublicidade.online"}/voice_audio/${file}`;
+      }
+      console.error("[eleven] falhou", r.status, (await r.text()).slice(0, 100));
+    } catch (e) {
+      console.error("[eleven] erro", (e as Error).message);
+    }
+  }
+
+  // 2) Fallback: Google Translate TTS (grátis, PT-PT) — voz robótica mas funciona sem custo
+  try {
+    const ttsUrl = `https://translate.google.com/translate_tts?ie=UTF-8&q=${encodeURIComponent(text.slice(0, 400))}&tl=pt-PT&client=tw-ob`;
+    const r2 = await fetch(ttsUrl, { headers: { "User-Agent": "Mozilla/5.0" } });
+    if (r2.ok) {
+      const buf = Buffer.from(await r2.arrayBuffer());
+      fs.writeFileSync(path.join(dir, file), buf);
+      return `${process.env.PUBLIC_URL || "https://2npublicidade.online"}/voice_audio/${file}`;
+    }
+    console.error("[google-tts] falhou", r2.status);
+  } catch (e) {
+    console.error("[google-tts] erro", (e as Error).message);
+  }
+  return null;
+}
+
 async function storeAttachment(phone: string, msgObj: any): Promise<{ url: string; name: string; mime: string; size: number; kind: string } | null> {
   try {
     const img = msgObj.imageMessage || msgObj.videoMessage || msgObj.documentMessage || msgObj.audioMessage;
@@ -655,6 +716,8 @@ r.post("/evolution-webhook", wrap(async (req, res) => {
     (msgObj.documentMessage && msgObj.documentMessage.caption) ||
     (msgObj.videoMessage && msgObj.videoMessage.caption) ||
     "";
+  const clienteEnviouAudio = !!msgObj.audioMessage;
+  const pediuAudio = /(manda\s+audio|envia\s+audio|mandar\s+audio|liga\s+ai|manda\s+um\s+audio|quero\s+ouvir|em\s+audio)/i.test(text);
   const convId = `evo-${phone}`;
   const customer_id = await resolveCustomer({ name: pushName, phone, email: null });
 
@@ -846,6 +909,11 @@ r.post("/evolution-webhook", wrap(async (req, res) => {
     } else {
       const reply = await generateBotReply(text, history, context);
       await sendEvolutionMessage(phone, reply);
+      // Áudio via ElevenLabs se cliente enviou áudio primeiro OU pediu áudio (regra Nino)
+      if (clienteEnviouAudio || pediuAudio) {
+        const audioUrl = await elevenTTSForWhatsApp(reply);
+        if (audioUrl) await sendEvolutionAudio(phone, audioUrl);
+      }
       await q(
         `INSERT INTO chat_messages (id, conversation_id, sender, sender_type, sender_name, text, timestamp, status)
          VALUES ($1,$2,'hermes','bot','Hermes',$3,now(),'sent') ON CONFLICT (id) DO NOTHING`,
