@@ -219,6 +219,13 @@ CREATE TABLE IF NOT EXISTS tasks (
   created_at TIMESTAMPTZ DEFAULT now()
 );
 
+-- Garantir colunas extra usadas pelo handler de voz/prazos (idempotente)
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS due_time TEXT;
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS priority TEXT DEFAULT 'NORMAL';
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS origin TEXT DEFAULT 'whatsapp';
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS customer_id TEXT;
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS doc_json JSONB DEFAULT '{}'::jsonb;
+
 CREATE TABLE IF NOT EXISTS activities (
   id TEXT PRIMARY KEY,
   title TEXT, subtitle TEXT, time_ago TEXT, type TEXT,

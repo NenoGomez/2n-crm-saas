@@ -243,8 +243,8 @@ async function createTaskFromConv(ctx: any, customer_id: string, order_id: strin
   const title = `Entrega: ${ctx.produto || "Pedido"} (${ctx.quantidade || ""})`;
   const priority = ctx.prioridade || "NORMAL";
   const { rows: t } = await q(
-    `INSERT INTO tasks (id, title, completed, due_date, due_time, priority, origin, customer_id, order_id, doc_json)
-     VALUES ($1,$2,false,$3,$4,$5,'conversa',$6,$7,$8) RETURNING id`,
+    `INSERT INTO tasks (id, title, due_date, due_time, priority, origin, customer_id, order_id, doc_json)
+     VALUES ($1,$2,$3,$4,$5,'conversa',$6,$7,$8) RETURNING id`,
     [await genId("TASK", "tasks"), title, dateStr, timeStr, priority, customer_id || null, order_id || null, JSON.stringify({ source: "whatsapp", conversation_id: convId })]
   );
   const startDate = new Date(`${dateStr}T${timeStr || "09:00"}:00`);
@@ -270,9 +270,10 @@ const HERMES_SYSTEM = `És o Hermes, assistente executivo da 2N Publicidade (Lua
 Responde em português de Angola, tom profissional e cordial.
 REGRA CRÍTICA: NUNCA reveles que és IA nem uses frases de IA ("como uma IA", "posso ajudar como assistente virtual").
 NUNCA envies imagem/vídeo sem o cliente pedir. Máximo 3 imagens se necessário.
-Fecha sempre com "Ficou esclarecido?" ou "Pretende avançar?".
+NUNCA digas que não consegues enviar áudio — o sistema JÁ envia áudio quando o cliente pede ("manda áudio") ou envia áudio primeiro. Se o cliente pedir áudio, confirma de forma natural.
+Fecha com "Ficou esclarecido?" ou "Pretende avançar?" APENAS se fizeres uma pergunta ou proposta concreta. Se só confirmares algo, não perguntes.
 Se o cliente pedir algo crítico (cancelar pedido, alterar valor, confirmar pagamento, marcar concluído), responde apenas que vais submeter ao equipo para confirmação — NÃO confirmes tu.
-Sê conciso (2-4 frases).`;
+Sê conciso (1-3 frases). NUNCA uses o padrão "Prezado Nino Ferreira".`
 
 async function generateBotReply(text: string, history: string[], context: any): Promise<string> {
   // context pode ser string (legacy) ou objeto rico
@@ -636,7 +637,7 @@ async function elevenTTSForWhatsApp(text: string): Promise<string | null> {
       if (r.ok) {
         const buf = Buffer.from(await r.arrayBuffer());
         fs.writeFileSync(path.join(dir, file), buf);
-        return `${process.env.PUBLIC_URL || "https://2npublicidade.online"}/voice_audio/${file}`;
+        return `${process.env.INTERNAL_URL || "http://127.0.0.1:8095"}/voice_audio/${file}`;
       }
       console.error("[eleven] falhou", r.status, (await r.text()).slice(0, 100));
     } catch (e) {
@@ -651,7 +652,7 @@ async function elevenTTSForWhatsApp(text: string): Promise<string | null> {
     if (r2.ok) {
       const buf = Buffer.from(await r2.arrayBuffer());
       fs.writeFileSync(path.join(dir, file), buf);
-      return `${process.env.PUBLIC_URL || "https://2npublicidade.online"}/voice_audio/${file}`;
+      return `${process.env.INTERNAL_URL || "http://127.0.0.1:8095"}/voice_audio/${file}`;
     }
     console.error("[google-tts] falhou", r2.status);
   } catch (e) {
@@ -842,8 +843,8 @@ r.post("/evolution-webhook", wrap(async (req, res) => {
       [await genId("TASK", "tasks"), title, due ? due.toISOString().slice(0,10) : null, ctx.hora_entrega || null, ctx.urgencia ? "URGENTE" : "NORMAL", "whatsapp", customer_id, order_id_prazo, JSON.stringify({ source: "whatsapp", conversation_id: convId })]);
     if (due) {
       await q(`INSERT INTO calendar_events (title, description, start_time, type, priority, customer_id, order_id, conversation_id, source, doc)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT DO NOTHING`,
-        [title, `Prazo combinado via WhatsApp (${ctx.prazo_texto || ctx.hora_entrega || ""})`, due.toISOString(), ctx.urgencia ? "URGENTE" : "NORMAL", customer_id || null, order_id_prazo || null, convId, "whatsapp", JSON.stringify({ conversation_id: convId })]);
+        VALUES ($1,$2,$3,'entrega',$4,$5,$6,$7,'whatsapp',$8) ON CONFLICT DO NOTHING`,
+        [title, `Prazo combinado via WhatsApp (${ctx.prazo_texto || ctx.hora_entrega || ""})`, due.toISOString(), ctx.urgencia ? "URGENTE" : "NORMAL", customer_id || null, order_id_prazo || null, convId, JSON.stringify({ conversation_id: convId })]);
     }
   }
 
